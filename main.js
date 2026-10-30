@@ -8,13 +8,14 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 
 // ---- tuning (Chrome dino rules, in metres and seconds) ----
-const SPEED0 = 11, SPEED_MAX = 26, ACCEL = 0.18;   // m/s, m/s gained per second
+const SPEED0 = 14, SPEED_MID = 26, SPEED_MAX = 40;  // m/s
+const ACCEL = 0.40, ACCEL_LATE = 0.12;              // m/s gained per second: 14 -> 26 in ~30 s, then slower climb to 40 (~2 min more)
 const GRAVITY = 40, FAST_FALL = 90;
 // jump feel (Ruben: fair, not frame-perfect): a held jump is big and forgiving; a quick tap is a small hop.
 // hedge = hedge length in seconds of running (with hitbox margins). Live-tunable via window.__runner.tune.
 const TUNE = { jumpV: 14, jumpCut: 3, hedge: 0.36 };
 const SCORE_PER_M = 0.9;                           // ~10 pts/s at the start, like Chrome
-const FLYERS_FROM = 150;                           // crows appear after this score (Ruben: earlier than Chrome's ~450)
+const FLYERS_FROM = 50;                            // crows appear after this score (Ruben: early, ~45 % of spawns)
 const LONG_FROM = 100;                             // long hedges (need a held jump) after this score
 const SCHIFFY_H = 1.3, DUCK_SCALE = 0.55;
 const FLYER_H = 0.75, CROW_SPAN = 1.3, CROW_FACING = Math.PI;
@@ -323,7 +324,7 @@ const sfx = {
 const scoreEl = document.getElementById('score');
 const card = document.getElementById('card');
 let state = 'ready'; // ready | run | over
-let speed = SPEED0, dist = 0, nextGap = 30, vy = 0, y = 0;
+let speed = SPEED0, dist = 0, nextGap = 30, nextKind = 'ground', vy = 0, y = 0;
 let jumpHeld = false, ducking = false, blinkT = 0, lastMilestone = 0, overT = 0, runT = 0;
 let hi = 0;
 try { hi = +localStorage.getItem(HI_KEY) || 0; } catch {}
@@ -346,7 +347,7 @@ const KEYS_HINT = touch ? 'Tap to jump · swipe down to duck' : 'Space / Up to j
 function reset() {
   for (const o of obstacles) give(o.g);
   obstacles.length = 0;
-  speed = SPEED0; dist = 0; nextGap = 30; vy = 0; y = 0; ducking = false; blinkT = 0; lastMilestone = 0; runT = 0;
+  speed = SPEED0; dist = 0; nextGap = 30; nextKind = 'ground'; vy = 0; y = 0; ducking = false; blinkT = 0; lastMilestone = 0; runT = 0;
   schiffy.position.y = 0;
 }
 function start() {
@@ -423,7 +424,7 @@ function step(dt) {
   if (state === 'ready') { mixer.update(dt); return; }
 
   runT += dt;
-  speed = Math.min(SPEED_MAX, speed + ACCEL * dt);
+  speed = Math.min(SPEED_MAX, speed + (speed < SPEED_MID ? ACCEL : ACCEL_LATE) * dt);
   const dz = speed * dt;
   dist += dz;
 
@@ -447,7 +448,7 @@ function step(dt) {
   const duckNow = ducking && y === 0;
   schiffyBody.scale.y += ((duckNow ? DUCK_SCALE : 1) - schiffyBody.scale.y) * Math.min(1, dt * 20);
   schiffyBody.scale.x = schiffyBody.scale.z = 1 + (1 - schiffyBody.scale.y) * 0.35;
-  runAct.timeScale = 0.8 + (speed - SPEED0) / (SPEED_MAX - SPEED0) * 0.8;
+  runAct.timeScale = 0.8 + (speed - SPEED0) / (SPEED_MID - SPEED0) * 0.8;
   mixer.update(dt);
 
   // scroll the world
@@ -470,10 +471,13 @@ function step(dt) {
   // spawn: gap scales with speed so every gap is jumpable, random extra like Chrome
   nextGap -= dz;
   if (nextGap <= 0) {
+    const len = nextKind === 'fly' ? spawnFlyer() : nextKind === 'long' ? spawnLong() : spawnGround();
+    // pick the NEXT kind now: ground can come back-to-back (0.65 s), but a crow keeps 0.95 s so you have
+    // landed from the last jump before you must duck / jump it (no crow hits mid-air you couldn't avoid)
     const r = Math.random(), sc = score();
-    const len = sc > FLYERS_FROM && r < 0.3 ? spawnFlyer() : sc > LONG_FROM && r > 0.8 ? spawnLong() : spawnGround();
-    const minGap = speed * 0.95 + len + 3; // ~0.25 s+ on the ground after a full jump to react to the next one
-    nextGap = minGap * (1 + Math.random() * 0.9);
+    nextKind = sc > FLYERS_FROM && r < 0.45 ? 'fly' : sc > LONG_FROM && r > 0.8 ? 'long' : 'ground';
+    const minGap = speed * (nextKind === 'fly' ? 0.95 : 0.65) + len + 3;
+    nextGap = minGap * (1 + Math.random() * 0.5);
   }
 
   // collision: Schiffy's box (forgiving, like Chrome's hit boxes)
