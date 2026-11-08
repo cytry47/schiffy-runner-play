@@ -1,5 +1,5 @@
-// Schiffy Runner: Chrome's offline dino game in 3D. Schiffy from the Pupkins Whale Hub; sky islands + clouds from the
-// Schiffy game's vn kit;
+// Schiffy Runner: Chrome's offline dino game in 3D. Schiffy from the Pupkins Whale Hub; sky isles = Ruben's Tripo
+// float_isle, clouds made in code;
 // trees, rocks, props, obstacles and birds = Ruben's own Tripo models (assets/tripo, assets/birds); grass tufts = KayKit (CC0).
 // Camera sits behind Schiffy. Schiffy stays at z = 0 and the world scrolls toward +z (Schiffy runs toward -z).
 
@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { clone as skelClone } from 'three/addons/utils/SkeletonUtils.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { createLive } from './audio.js';
 
 // ---- tuning (Chrome dino rules, in metres and seconds) ----
@@ -28,7 +29,7 @@ const SCHIFFY_H = 1.3, DUCK_SCALE = 0.55;
 // spawn height, hz 0.35. h = visual height of the scaled model, centred on the hitbox.
 const FLYER_H = 0.75, FLYER_BOX = 0.4, FLYER_HZ = 0.35;
 // tone < 1 darkens the model a little so it stands out from the bright day / dusk background (tools/progression.py)
-const BIRDS = { owl: { h: 0.72, glide: true, tone: 0.5 }, hummingbird: { h: 0.8, glide: false, tone: 0.5 }, yellow_bird: { h: 0.72, glide: true, tone: 1 } };
+const BIRDS = { owl: { h: 0.72, glide: true, tone: 0.4 }, hummingbird: { h: 0.8, glide: false, tone: 0.42 }, yellow_bird: { h: 0.72, glide: true, tone: 1 } };
 const SPAWN_Z = -75, DESPAWN_Z = 8;
 const HI_KEY = 'schiffy-runner.hi';
 // speed tiers: names for the existing ramp (no rule change). A banner shows when one is reached:
@@ -134,6 +135,24 @@ path.rotation.x = -Math.PI / 2;
 path.position.set(0, 0.01, -40);
 path.receiveShadow = true;
 scene.add(path);
+// winter (S2): a snow texture per ground plane, mixed over the base one by uSnow (0-1, blended with the season tint).
+// Sampled with the base map's uv (same repeat + scrolling offset), so it scrolls with the ground.
+// fairy (S3): same trick, a second texture mixed in by uFairy (lilac grass, pale lavender / cream path).
+function snowGround(mat, snowTex, fairyTex) {
+  const u = { value: 0 }, f = { value: 0 };
+  mat.userData.snow = u; mat.userData.fairy = f;
+  mat.onBeforeCompile = (sh) => {
+    sh.uniforms.uSnow = u; sh.uniforms.uSnowMap = { value: snowTex };
+    sh.uniforms.uFairy = f; sh.uniforms.uFairyMap = { value: fairyTex };
+    sh.fragmentShader = 'uniform float uSnow, uFairy;\nuniform sampler2D uSnowMap, uFairyMap;\n' + sh.fragmentShader.replace('#include <map_fragment>',
+      '#include <map_fragment>\nif (uSnow > 0.0) diffuseColor.rgb = mix(diffuseColor.rgb, texture2D(uSnowMap, vMapUv).rgb, uSnow);' +
+      '\nif (uFairy > 0.0) diffuseColor.rgb = mix(diffuseColor.rgb, texture2D(uFairyMap, vMapUv).rgb, uFairy);');
+  };
+}
+snowGround(grass.material, noiseTex('#e8eef6', ['#dbe4ef', '#f5f8fc', '#d0dcea', '#e2e9f2'], 500),
+  noiseTex('#a49bcc', ['#988fc3', '#b0a7d8', '#a39acf', '#9eabc6'], 500)); // fairy: soft lilac grass, a few teal flecks
+snowGround(path.material, noiseTex('#cfc6b8', ['#c0b5a5', '#dbd5cb', '#b7ab99', '#e3ded6'], 260), // packed snow, grey-brown
+  noiseTex('#e6dbe8', ['#d9cce0', '#f0e7ef', '#d3c6d9', '#ebe0d0'], 260)); // fairy: pale lavender / cream path
 
 // ---- loading ----
 const draco = new DRACOLoader().setDecoderPath('./vendor/three/addons/libs/draco/');
@@ -175,14 +194,17 @@ function wrap(model, h, byMax, base) {
 // Ruben's Tripo models (assets/tripo/MAP.md) + KayKit grass tufts (no Tripo tuft: 20k tris x 36 isn't worth it)
 const TRIPO = ['tree_oak', 'tree_round', 'tree_birch', 'tree_pine', 'tree_blossom', 'tree_autumn', 'tree_apple',
   'bush_broadleaf', 'bush_holly', 'hedge_bush', 'hedge_leafy', 'rock_mossy', 'rock_boulders', 'rock_pile', 'fern',
-  'mushrooms', 'cactus_barrel', 'cactus_saguaro', 'crate', 'log_branch', 'bench', 'signpost', 'house'];
+  'mushrooms', 'cactus_barrel', 'cactus_saguaro', 'crate', 'log_branch', 'bench', 'signpost', 'house',
+  'pine_snow_a', 'pine_snow_b', 'pine_snow_c', 'snowman', // S2 winter: 3 snowy pines + snowman
+  'tree_fairy_blossom', 'tree_wisteria', 'tree_twotier', 'bush_berry_teal', // S3 fairy: purple / blue trees, teal bush,
+  'shroom_teal', 'shroom_green', 'shroom_pink', 'shroom_purple', 'shroom_trio', 'shroom_spotted']; // giant + glow mushrooms
 const PACK_FILES = { forest: ['Grass_1_A', 'Grass_2_A'].map((n) => n + '_Color1') };
 const packList = Object.entries(PACK_FILES).flatMap(([dir, names]) => names.map((n) => [dir, n]));
 const BIRD_IDS = Object.keys(BIRDS);
 const loaded = await Promise.all(
-  ['schiffy.glb', 'schiffy-clips.glb', 'schiffy-env/vn_kit.glb', ...BIRD_IDS.map((b) => `birds/${b}.glb`),
+  ['schiffy.glb', 'schiffy-clips.glb', 'tripo/float_isle.glb', ...BIRD_IDS.map((b) => `birds/${b}.glb`),
     ...TRIPO.map((n) => `tripo/${n}.glb`), ...packList.map(([dir, n]) => `${dir}/${n}.gltf`)].map(load));
-const [schiffyGltf, clipsGltf, skyKit] = loaded;
+const [schiffyGltf, clipsGltf, isleGltf] = loaded;
 const birdGltfs = loaded.slice(3, 3 + BIRD_IDS.length);
 const tripoGltfs = loaded.slice(3 + BIRD_IDS.length, 3 + BIRD_IDS.length + TRIPO.length);
 const packGltfs = loaded.slice(3 + BIRD_IDS.length + TRIPO.length);
@@ -261,26 +283,77 @@ function makeBird(src) {
 
 // ---- sky: floating islands bob far away, clouds drift slowly across (no fog) ----
 // placed around the camera's view direction (it looks forward-left, toward -x / -z)
+// isles = Ruben's Tripo float_isle (Pawty look, 2026-11-08), one model varied by size / yaw / tilt / mirror
 const skyThings = [], clouds = [], skyMats = []; // skyMats: tinted by the day/night cycle
-function skyObj(name, h, x, y, z, ry, bob = 0) {
-  const g = wrap(skyKit.scene.getObjectByName(name).clone(true), h, true);
-  g.traverse((o) => {
-    if (o.isMesh) { o.material = o.material.clone(); o.material.fog = false; o.material.userData.base = o.material.color.clone(); skyMats.push(o.material); }
-  });
+function skyMat(m) {
+  m.fog = false; m.userData.base = m.color.clone();
+  if (m.emissive) m.userData.emis = m.emissive.clone();
+  skyMats.push(m);
+  return m;
+}
+function skyObj(src, h, x, y, z, ry, bob = 0, own = true) {
+  const g = wrap(src.clone(true), h, true);
+  if (own) g.traverse((o) => { if (o.isMesh) o.material = skyMat(o.material.clone()); });
   g.position.set(x, y, z); g.rotation.y = ry;
   g.userData.base = new THREE.Vector3(x, y, z); g.userData.bob = bob;
   scene.add(g);
   return g;
 }
-skyThings.push(skyObj('isle_float', 22, -95, 26, -150, 0.4, 1.2));
-skyThings.push(skyObj('isle_castle', 26, -20, 34, -190, -0.3, 0.9));
-skyThings.push(skyObj('isle_float', 14, -150, 38, -70, 1.6, 0.7));
-skyThings.push(skyObj('isle_float', 10, 30, 24, -160, 2.4, 0.6));
+const ISLES = [ // [size m, x, y, z, yaw, bob, tilt, mirror]
+  [22, -95, 26, -150, 0.4, 1.2, 0.03, 1], [27, -20, 34, -190, -2.2, 0.9, -0.04, -1],
+  [14, -150, 38, -70, 1.6, 0.7, 0.06, -1], [10, 30, 24, -160, 3.6, 0.6, -0.05, 1]];
+for (const [h, x, y, z, ry, bob, tilt, mir] of ISLES) {
+  const g = skyObj(isleGltf.scene, h, x, y, z, ry, bob);
+  g.children[0].scale.x *= mir; g.rotation.z = tilt;
+  skyThings.push(g);
+}
+// clouds: code-made puffy toy clouds (Pupkins), soft clustered blobs merged into one geometry per variant: a big
+// lumpy base row, a smaller top row, depth on z, flattened bottom, vertex colours white on top -> soft blue-grey
+// shade underneath. One shared material (tinted with the sky like the isles), 6 seeded variants.
+function rng(seed) { return () => { seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+const CLOUD_TOP = new THREE.Color('#ffffff'), CLOUD_SHADE = new THREE.Color('#a3b3d1');
+function cloudGeo(seed) {
+  const r = rng(seed), parts = [];
+  const n = 3 + Math.floor(r() * 2.2), w = n * 1.0;
+  const blob = (x, y, z, rad) => {
+    const g = new THREE.SphereGeometry(rad, 20, 14);
+    g.translate(x, y, z); parts.push(g);
+  };
+  for (let i = 0; i < n; i++) { // base row: biggest in the middle
+    const t = n === 1 ? 0.5 : i / (n - 1), mid = 1 - Math.abs(t - 0.5) * 1.2;
+    blob((t - 0.5) * w + (r() - 0.5) * 0.4, 0.15 + r() * 0.2, (r() - 0.5) * 0.9, 0.85 + mid * 0.55 + r() * 0.25);
+  }
+  const m = 2 + Math.floor(r() * 2.5); // top puffs + one crown puff
+  for (let i = 0; i < m; i++) blob(((i + 0.5) / m - 0.5) * w * 0.6 + (r() - 0.5) * 0.3, 1.0 + r() * 0.4, (r() - 0.5) * 0.6, 0.85 + r() * 0.45);
+  blob((r() - 0.5) * w * 0.25, 1.75 + r() * 0.3, (r() - 0.5) * 0.4, 0.8 + r() * 0.35);
+  for (let i = 0; i < 2; i++) blob((r() - 0.5) * w * 0.7, 0.2 + r() * 0.3, (i ? 0.8 : -0.8) + (r() - 0.5) * 0.3, 0.6 + r() * 0.3); // depth
+  const geo = mergeGeometries(parts);
+  parts.forEach((g) => g.dispose());
+  const pos = geo.attributes.position, nrm = geo.attributes.normal, col = [], c = new THREE.Color();
+  let y0 = Infinity, y1 = -Infinity;
+  for (let i = 0; i < pos.count; i++) { y0 = Math.min(y0, pos.getY(i)); y1 = Math.max(y1, pos.getY(i)); }
+  const floor = y0 + (y1 - y0) * 0.16;
+  for (let i = 0; i < pos.count; i++) {
+    let y = pos.getY(i);
+    if (y < floor) { y = floor - (floor - y) * 0.22; pos.setY(i, y); nrm.setY(i, nrm.getY(i) * 0.4 - 0.6); } // flat soft base
+    const k = THREE.MathUtils.smoothstep((y - floor) / (y1 - floor), -0.1, 0.75);
+    c.copy(CLOUD_SHADE).lerp(CLOUD_TOP, k);
+    col.push(c.r, c.g, c.b);
+  }
+  nrm.needsUpdate = true;
+  for (let i = 0; i < nrm.count; i++) { const v = new THREE.Vector3().fromBufferAttribute(nrm, i).normalize(); nrm.setXYZ(i, v.x, v.y, v.z); }
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  return geo;
+}
+const cloudMat = skyMat(new THREE.MeshLambertMaterial({ color: '#ffffff', vertexColors: true, emissive: '#444a56' }));
+const cloudGeos = [11, 23, 37, 41, 59, 73].map(cloudGeo);
 const CLOUD_X0 = -220, CLOUD_X1 = 120;
 for (let i = 0; i < 16; i++) {
   const z = -60 - Math.random() * 180;
-  const c = skyObj(i % 4 ? 'cloud_day' : 'cloud_bank', 12 + Math.random() * 16,
-    CLOUD_X0 + Math.random() * (CLOUD_X1 - CLOUD_X0), 14 + Math.random() * 30, z, Math.random() * 0.6 - 0.3);
+  const mesh = new THREE.Mesh(cloudGeos[i % cloudGeos.length], cloudMat);
+  mesh.scale.set(1, 0.85 + Math.random() * 0.3, 1);
+  const c = skyObj(mesh, 13 + Math.random() * 18,
+    CLOUD_X0 + Math.random() * (CLOUD_X1 - CLOUD_X0), 14 + Math.random() * 30, z, Math.random() * 0.6 - 0.3, 0, false);
   c.userData.speed = 1 + Math.random() * 1.5;
   clouds.push(c);
 }
@@ -288,8 +361,10 @@ for (let i = 0; i < 16; i++) {
 // ---- day / night cycle by score (Chrome-like, 2026-11-07): day -> dusk -> night -> dawn, repeating ----
 // each change blends over SKY_BLEND s of play. Fairness: night keeps a strong cool key light and darkens the
 // ground + sky more than the obstacles, so silhouettes stay as readable as by day (tools/progression.py measures it).
-const CYCLE = 1600, SKY_BLEND = 3;
-const PHASES = [[700, 'day'], [900, 'dusk'], [1450, 'night'], [1600, 'dawn']]; // [score end in the cycle, phase]
+// 2026-11-08 (S1): one full day + night per SEASON (7500 pts), the old 1600-pt proportions scaled up
+// (day 0-700, dusk -900, night -1450, dawn -1600 of 1600). The season changes as dawn ends (low light).
+const SEASON_LEN = 7500, SKY_BLEND = 3;
+const PHASES = [[3280, 'day'], [4220, 'dusk'], [6800, 'night'], [7500, 'dawn']]; // [score end in the season, phase]
 const pal = (o) => {
   const out = {};
   for (const [k, v] of Object.entries(o)) out[k] = typeof v === 'number' ? v : Array.isArray(v) ? new THREE.Vector3(...v) : new THREE.Color(v);
@@ -297,20 +372,20 @@ const pal = (o) => {
 };
 const PAL = {
   day: pal({ top: '#6fb8ec', mid: '#a9daf6', bot: '#cfe9f7', haze: '#cfe9f7', hemiSky: '#ffffff', hemiGround: '#7da35a',
-    hemiI: 1.5, sunC: '#fff4dc', sunI: 2.4, sunPos: [4, 10, 4], grass: '#ffffff', path: '#ffffff', sky: '#ffffff', stars: 0, birdLift: 0, hiveLift: 0 }),
+    hemiI: 1.5, sunC: '#fff4dc', sunI: 2.4, sunPos: [4, 10, 4], grass: '#ffffff', path: '#ffffff', sky: '#ffffff', stars: 0, birdLift: 0, hiveLift: 0, shroomGlow: 0.05 }),
   // warm low sun: longer shadows, orange / pink sky
   dusk: pal({ top: '#5b6db5', mid: '#e98f9c', bot: '#ffb56e', haze: '#f3b48d', hemiSky: '#ffd9c4', hemiGround: '#7b6a48',
-    hemiI: 1.25, sunC: '#ffad6a', sunI: 2.6, sunPos: [7, 7, 5], grass: '#ffd9b5', path: '#fff4ea', sky: '#ffc0a2', stars: 0.15, birdLift: 0, hiveLift: 0 }),
+    hemiI: 1.25, sunC: '#ffad6a', sunI: 2.6, sunPos: [7, 7, 5], grass: '#ffd9b5', path: '#fff4ea', sky: '#ffc0a2', stars: 0.15, birdLift: 0, hiveLift: 0, shroomGlow: 0.25 }),
   // deep blue, cool moon key light; ground + sky darker than the lit obstacles
   night: pal({ top: '#08122e', mid: '#152756', bot: '#25396b', haze: '#22345f', hemiSky: '#7f97d6', hemiGround: '#1d2838',
-    hemiI: 0.85, sunC: '#d4e0ff', sunI: 2.5, sunPos: [3, 9, 6], grass: '#4a5c86', path: '#5d6c96', sky: '#4f5f92', stars: 1, birdLift: 0.4, hiveLift: 0.22 }),
+    hemiI: 0.85, sunC: '#d4e0ff', sunI: 2.5, sunPos: [3, 9, 6], grass: '#4a5c86', path: '#5d6c96', sky: '#4f5f92', stars: 1, birdLift: 0.4, hiveLift: 0.22, shroomGlow: 0.75 }),
   dawn: pal({ top: '#4b7dc4', mid: '#c9a3cc', bot: '#ffd2aa', haze: '#efc9b9', hemiSky: '#ffe9e2', hemiGround: '#7a8b5a',
-    hemiI: 1.35, sunC: '#ffd2a3', sunI: 2.4, sunPos: [6, 7.5, 6], grass: '#f2dcd0', path: '#fff4ee', sky: '#f0c8c0', stars: 0.2, birdLift: 0, hiveLift: 0 }),
+    hemiI: 1.35, sunC: '#ffd2a3', sunI: 2.4, sunPos: [6, 7.5, 6], grass: '#f2dcd0', path: '#fff4ee', sky: '#f0c8c0', stars: 0.2, birdLift: 0, hiveLift: 0, shroomGlow: 0.2 }),
 };
 const clonePal = (p) => Object.fromEntries(Object.entries(p).map(([k, v]) => [k, typeof v === 'number' ? v : v.clone()]));
 const skyCur = clonePal(PAL.day);
 let skyFrom = null, skyTo = 'day', skyK = 1, skyDirty = true;
-function phaseAt(sc) { const m = sc % CYCLE; return PHASES.find(([e]) => m < e)[1]; }
+function phaseAt(sc) { const m = sc % SEASON_LEN; return PHASES.find(([e]) => m < e)[1]; }
 function mixPal(out, a, b, t) {
   for (const k in b) out[k] = typeof b[k] === 'number' ? a[k] + (b[k] - a[k]) * t : out[k].copy(a[k]).lerp(b[k], t);
 }
@@ -353,8 +428,13 @@ function applySky() {
   hemi.color.copy(c.hemiSky); hemi.groundColor.copy(c.hemiGround); hemi.intensity = c.hemiI;
   sun.color.copy(c.sunC); sun.intensity = c.sunI;
   sun.position.copy(c.sunPos);
-  grass.material.color.copy(c.grass); path.material.color.copy(c.path);
-  for (const m of skyMats) m.color.copy(m.userData.base).multiply(c.sky);
+  grass.material.color.copy(c.grass).multiply(seasonCur.grass); path.material.color.copy(c.path).multiply(seasonCur.path);
+  grass.material.userData.snow.value = path.material.userData.snow.value = seasonCur.snow;
+  grass.material.userData.fairy.value = path.material.userData.fairy.value = seasonCur.fairy;
+  houseSnow.value = seasonCur.snow;
+  for (const m of shroomMats) m.emissive.setScalar(c.shroomGlow);
+  sparkles.material.opacity = seasonCur.fairy * (0.3 + 0.7 * c.stars); sparkles.visible = sparkles.material.opacity > 0.01;
+  for (const m of skyMats) { m.color.copy(m.userData.base).multiply(c.sky); if (m.userData.emis) m.emissive.copy(m.userData.emis).multiply(c.sky); }
   // birds glow a little in their OWN colours (emissiveMap = map) at dusk / dawn / night, the hive tree at night, so they
   // never sink into the warm or dark background (tools/progression.py: without it night/dusk dE fell to 12-19)
   const glow = (m, k) => (m.emissiveMap ? m.emissive.setScalar(k) : m.emissive.copy(m.color).multiplyScalar(k));
@@ -364,38 +444,244 @@ function applySky() {
   moon.material.opacity = Math.max(0, (c.stars - 0.3) / 0.7); moon.visible = moon.material.opacity > 0.01;
 }
 
-// ---- roadside scenery: recycled along both sides ----
-// [name, height, kind]: tree = stands further out, edge = sits right at the path edge facing it
+// ---- seasons (S1, Ruben 2026-11-08): by points, meadow 0 -> autumn 7500 -> winter 15000 -> fairy 22500 -> meadow 30000 ----
+// Each season = one full sky day + night (SEASON_LEN). A season only changes WHAT respawns ahead (far in the fog), so
+// nothing already on screen pops; ground + grass tint blend over SEASON_BLEND s. Obstacles are never touched.
+// Adding a season = a data entry in SEASONS (scenery list, tuft list, ground tint) + any leaf variants in LEAF.
+// Leaf variants: 'name@variant' = the Tripo model with its GREEN texels hue-shifted (trunks, bark, flowers untouched),
+// on cloned materials (never the shared ones).
+const LEAF = {
+  orange: { hue: 27, sat: 1.05 }, gold: { hue: 42, sat: 1.1, val: 1.1 }, red: { hue: 4, sat: 1.4, val: 1.75 }, amber: { hue: 24, sat: 1.4, val: 1.75 }, // red + amber: tree_round's dark leaves need the lift
+  rust: { hue: 17, sat: 0.95 }, straw: { hue: 46, sat: 0.62, val: 0.95 }, olive: { hue: 52, sat: 0.7 },
+  // S2 winter: frosted = leaves a muted cool green + snow on every up-facing surface (snow: 0-1)
+  frost: { hue: 165, sat: 0.5, val: 0.85, snow: 0.95 }, frostgrass: { hue: 140, sat: 0.6, val: 0.95, snow: 0.45 },
+  // S3 fairy: violet / lilac / periwinkle crowns + lilac tufts (to fill out Ruben's purple trees)
+  violet: { hue: 275, sat: 0.95, val: 1.35 }, lilac: { hue: 285, sat: 0.6, val: 1.3 }, periwinkle: { hue: 232, sat: 0.75, val: 1.3 },
+  lilacgrass: { hue: 262, sat: 0.45, val: 1.2 },
+};
+const LEAF_GLSL = `
+{ // leaf colour shift: green texels -> uLeaf hue (x = hue 0-1, y = saturation scale, z = value scale)
+  vec3 s = pow(max(diffuseColor.rgb, vec3(0.0)), vec3(1.0 / 2.2));
+  float mx = max(s.r, max(s.g, s.b)), d = mx - min(s.r, min(s.g, s.b));
+  if (d > 0.02 && s.g >= s.r && s.g >= s.b) {
+    float h = 1.0 / 3.0 + (s.b - s.r) / (6.0 * d), sat = d / mx;
+    float w = smoothstep(0.12, 0.18, h) * (1.0 - smoothstep(0.52, 0.6, h)) * smoothstep(0.1, 0.25, sat);
+    vec3 k = clamp(abs(mod(uLeaf.x * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
+    vec3 t = mx * uLeaf.z * mix(vec3(1.0), k, clamp(sat * uLeaf.y, 0.0, 1.0));
+    diffuseColor.rgb = mix(diffuseColor.rgb, pow(t, vec3(2.2)), w);
+  }
+}`;
+// snow cap: up-facing surfaces (world up, after normal maps) turn snow white; runs before lighting reads diffuseColor
+const SNOW_GLSL = `
+{ float up = dot(normal, normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz));
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.80, 0.86, 0.95), uSnowAmt * smoothstep(0.35, 0.8, up)); }`;
+function leafMat(m, v) {
+  const c = m.clone();
+  const u = new THREE.Vector3(v.hue / 360, v.sat ?? 1, v.val ?? 1);
+  c.onBeforeCompile = (sh) => {
+    sh.uniforms.uLeaf = { value: u };
+    sh.fragmentShader = 'uniform vec3 uLeaf;\n' + sh.fragmentShader.replace('#include <map_fragment>', '#include <map_fragment>\n' + LEAF_GLSL);
+    if (v.snow) {
+      sh.uniforms.uSnowAmt = { value: v.snow };
+      sh.fragmentShader = 'uniform float uSnowAmt;\n' + sh.fragmentShader.replace('#include <normal_fragment_maps>', '#include <normal_fragment_maps>\n' + SNOW_GLSL);
+    }
+  };
+  c.customProgramCacheKey = () => (v.snow ? 'leafsnow' : 'leafshift');
+  return c;
+}
+// build 'name@variant' sources once (a clone of the model with leaf-shifted material copies)
+function leafSource(id) {
+  if (propSrc[id]) return;
+  const [name, vname] = id.split('@');
+  const src = propSrc[name].clone(true), cache = new Map();
+  const swap = (m) => cache.get(m) || cache.set(m, leafMat(m, LEAF[vname])).get(m);
+  src.traverse((o) => { if (o.isMesh) o.material = Array.isArray(o.material) ? o.material.map(swap) : swap(o.material); });
+  propSrc[id] = src;
+}
+const baseName = (id) => id.split('@')[0];
+
+// [name(@variant), height, kind]: tree = stands further out, edge = sits right at the path edge facing it
 // (2026-11-08: Tripo models per assets/tripo/MAP.md, old heights kept; signpost stands in for the mailbox)
-const SCENERY = [['tree_oak', 5, 'tree'], ['bush_broadleaf', 1.0], ['tree_birch', 4.2, 'tree'], ['signpost', 1.1, 'edge'],
+const SCENERY_MEADOW = [['tree_oak', 5, 'tree'], ['bush_broadleaf', 1.0], ['tree_birch', 4.2, 'tree'], ['signpost', 1.1, 'edge'],
   ['tree_pine', 5.5, 'tree'], ['rock_boulders', 0.8], ['tree_blossom', 4.5, 'tree'], ['bench', 0.9, 'edge'], ['tree_round', 5, 'tree'],
   ['bush_holly', 1.1], ['tree_round', 4.6, 'tree'], ['fern', 0.9], ['tree_birch', 3.8, 'tree'], ['tree_autumn', 4, 'tree'],
   ['hedge_leafy', 0.9], ['tree_apple', 3.6, 'tree'], ['tree_autumn', 5, 'tree'], ['rock_pile', 0.7], ['tree_pine', 4.8, 'tree'],
   ['mushrooms', 0.6]];
-const scenery = [];
-const SCENERY_SPAN = 96, SCENERY_N = 30;
-for (let i = 0; i < SCENERY_N; i++) {
-  const [name, h, kind] = SCENERY[(i * 7) % SCENERY.length];
-  // camera sits on the right: edge props (bench, mailbox) only on the left, right-side props stand further out
-  const side = kind === 'edge' ? -1 : i % 2 ? 1 : -1;
+// autumn: mostly orange / red / gold crowns (tree_autumn + leaf-shifted oak / round / birch), only pine + apple stay green
+const SCENERY_AUTUMN = [['tree_oak@orange', 5, 'tree'], ['bush_broadleaf@rust', 1.0], ['tree_birch@gold', 4.2, 'tree'], ['signpost', 1.1, 'edge'],
+  ['tree_autumn', 5, 'tree'], ['rock_boulders@olive', 0.8], ['tree_round@red', 4.6, 'tree'], ['bench', 0.9, 'edge'], ['tree_autumn', 4.6, 'tree'],
+  ['fern@straw', 0.9], ['tree_pine', 5.2, 'tree'], ['mushrooms', 0.6], ['tree_birch@gold', 3.8, 'tree'], ['tree_autumn', 4, 'tree'],
+  ['bush_holly', 1.1], ['tree_apple', 3.6, 'tree'], ['tree_oak@red', 5, 'tree'], ['rock_pile', 0.7], ['tree_round@amber', 4.4, 'tree'],
+  ['hedge_leafy@gold', 0.9]];
+// winter: mostly Ruben's snowy pines, a few frosted oak / round / birch, frosted bushes + rocks, a snowman by the path
+const SCENERY_WINTER = [['pine_snow_a', 5.2, 'tree'], ['bush_broadleaf@frost', 1.0], ['pine_snow_b', 5, 'tree'], ['snowman', 1.3, 'edge'],
+  ['pine_snow_c', 4.8, 'tree'], ['rock_boulders@frost', 0.8], ['tree_oak@frost', 5, 'tree'], ['bench', 0.9, 'edge'], ['pine_snow_a', 4.6, 'tree'],
+  ['hedge_leafy@frost', 0.9], ['pine_snow_b', 4.4, 'tree'], ['rock_pile@frost', 0.7], ['tree_birch@frost', 4.2, 'tree'], ['pine_snow_c', 5.4, 'tree'],
+  ['fern@frost', 0.9], ['pine_snow_a', 4, 'tree'], ['tree_round@frost', 4.6, 'tree'], ['signpost', 1.1, 'edge'], ['pine_snow_b', 5.6, 'tree'],
+  ['pine_snow_c', 4.2, 'tree']];
+// fairy (S3, Ruben 2026-11-08): his purple / blue trees (U28 blossom, U1 wisteria, U14 two-tier), teal berry bush, giant
+// coloured mushrooms by the path (the glow ones light up at night: shroomMats), violet / lilac leaf variants to fill out
+const SCENERY_FAIRY = [['tree_fairy_blossom', 4.8, 'tree'], ['shroom_teal', 2.0], ['tree_wisteria', 4.8, 'tree'], ['shroom_trio', 1.0, 'edge'],
+  ['tree_twotier', 5, 'tree'], ['bush_berry_teal', 1.0], ['tree_round@violet', 4.6, 'tree'], ['shroom_pink', 1.9], ['tree_fairy_blossom', 4.4, 'tree'],
+  ['shroom_spotted', 1.6], ['tree_wisteria', 5.2, 'tree'], ['bush_broadleaf@lilac', 1.0], ['tree_twotier', 4.6, 'tree'], ['shroom_green', 1.8],
+  ['tree_blossom', 4.5, 'tree'], ['shroom_purple', 1.0, 'edge'], ['tree_fairy_blossom', 5.2, 'tree'], ['bush_berry_teal', 0.9],
+  ['tree_birch@periwinkle', 4.2, 'tree'], ['shroom_teal', 1.7]];
+const TUFTS = ['Grass_2_A', 'Grass_1_A', 'Grass_1_A']; // tuft slot i uses TUFTS[i % 3]
+const rgb = (r, g, b) => new THREE.Color().setRGB(r, g, b); // linear multipliers on the ground textures (can be > 1)
+const SEASONS = [
+  // snow: 0-1 mix of the snow ground textures (snowGround), blended with the tint
+  { id: 'meadow', scenery: SCENERY_MEADOW, tufts: TUFTS, grass: rgb(1, 1, 1), path: rgb(1, 1, 1), snow: 0, fairy: 0 },
+  // warm golden-olive grass (#86c25a -> ~#b0aa50), a slightly browner path (#d9b98a -> ~#c9a070)
+  { id: 'autumn', scenery: SCENERY_AUTUMN, tufts: TUFTS.map((n) => n + '@straw'), grass: rgb(1.82, 0.75, 0.78), path: rgb(0.84, 0.73, 0.64), snow: 0, fairy: 0 },
+  // S2 winter: snow ground with a soft cool tint, packed-snow path, frosted tufts
+  { id: 'winter', scenery: SCENERY_WINTER, tufts: TUFTS.map((n) => n + '@frostgrass'), grass: rgb(0.8, 0.85, 0.95), path: rgb(0.9, 0.92, 0.98), snow: 1, fairy: 0 },
+  // S3 fairy: lilac grass + pale lavender / cream path (fairy textures, snowGround), lilac tufts, a few sparkles drifting
+  { id: 'fairy', scenery: SCENERY_FAIRY, tufts: TUFTS.map((n) => n + '@lilacgrass'), grass: rgb(1, 1, 1), path: rgb(1, 1, 1), snow: 0, fairy: 1 },
+];
+const SEASON_LOOP = SEASON_LEN * SEASONS.length, SEASON_BLEND = 4;
+function seasonAt(sc) { return SEASONS[Math.floor((sc % SEASON_LOOP) / SEASON_LEN)]; }
+for (const s of SEASONS) for (const id of [...s.scenery.map((e) => e[0]), ...s.tufts]) if (id.includes('@')) leafSource(id);
+const seasonCur = { grass: SEASONS[0].grass.clone(), path: SEASONS[0].path.clone(), snow: SEASONS[0].snow, fairy: SEASONS[0].fairy };
+let seasonNow = SEASONS[0], seasonFrom = null, seasonK = 1;
+function snapSeasonTint(s) { seasonNow = s; seasonK = 1; seasonCur.grass.copy(s.grass); seasonCur.path.copy(s.path); seasonCur.snow = s.snow; seasonCur.fairy = s.fairy; skyDirty = true; }
+function updateSeason(sc, dt) {
+  const s = seasonAt(sc);
+  if (s !== seasonNow) { seasonFrom = { grass: seasonCur.grass.clone(), path: seasonCur.path.clone(), snow: seasonCur.snow, fairy: seasonCur.fairy }; seasonNow = s; seasonK = 0; }
+  if (seasonK < 1) {
+    seasonK = Math.min(1, seasonK + dt / SEASON_BLEND);
+    const t = seasonK * seasonK * (3 - 2 * seasonK);
+    seasonCur.grass.copy(seasonFrom.grass).lerp(seasonNow.grass, t); seasonCur.path.copy(seasonFrom.path).lerp(seasonNow.path, t);
+    seasonCur.snow = seasonFrom.snow + (seasonNow.snow - seasonFrom.snow) * t;
+    seasonCur.fairy = seasonFrom.fairy + (seasonNow.fairy - seasonFrom.fairy) * t;
+    skyDirty = true;
+  }
+}
+
+// fairy glow mushrooms: their own colours glow a little at dusk / night (emissiveMap = map, PAL shroomGlow), masked to
+// the saturated, non-green texels so caps glow and stems / grass bases stay matte. No extra lights.
+const shroomMats = new Set();
+for (const id of ['shroom_teal', 'shroom_pink', 'shroom_purple', 'shroom_trio', 'shroom_spotted']) propSrc[id].traverse((o) => {
+  if (!o.isMesh) return;
+  for (const m of [].concat(o.material)) {
+    if (shroomMats.has(m) || !m.map) continue;
+    selfGlow(m); m.emissive.setScalar(0);
+    m.onBeforeCompile = (sh) => {
+      sh.fragmentShader = sh.fragmentShader.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+      { vec3 e = pow(max(emissiveColor.rgb, vec3(0.0)), vec3(1.0 / 2.2)); float mx = max(e.r, max(e.g, e.b)), d = mx - min(e.r, min(e.g, e.b));
+        bool green = e.g >= e.r && e.g >= e.b && (e.g - e.b) > 0.08;
+        totalEmissiveRadiance *= green ? 0.0 : smoothstep(0.25, 0.5, d / max(mx, 1e-3)); }`);
+    };
+    m.customProgramCacheKey = () => 'shroomglow';
+    shroomMats.add(m);
+  }
+});
+// sparkles: one Points object of soft yellow motes beside the path (never over it), drifting with the ground; fairy
+// season only, faint by day, brighter at night. No gameplay effect.
+const SPARK_N = 46;
+const sparkles = (() => {
+  const pos = new Float32Array(SPARK_N * 3), ph = [];
+  for (let i = 0; i < SPARK_N; i++) {
+    const side = i % 2 ? 1 : -1;
+    pos.set([side * (PATH_W / 2 + 0.6 + Math.random() * 7), 0.4 + Math.random() * 2.6, 6 - Math.random() * 56], i * 3);
+    ph.push(Math.random() * 6.28);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const c = document.createElement('canvas'); c.width = c.height = 32;
+  const g = c.getContext('2d'), gr = g.createRadialGradient(16, 16, 0, 16, 16, 16);
+  gr.addColorStop(0, 'rgba(255,255,235,1)'); gr.addColorStop(0.35, 'rgba(255,240,170,0.6)'); gr.addColorStop(1, 'rgba(255,230,150,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 32, 32);
+  const p = new THREE.Points(geo, new THREE.PointsMaterial({ color: '#fff2b0', size: 0.22, map: new THREE.CanvasTexture(c), transparent: true,
+    opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, fog: true }));
+  p.userData.ph = ph; p.visible = false; p.frustumCulled = false;
+  scene.add(p);
+  return p;
+})();
+function stepSparkles(dz, t) {
+  if (!sparkles.visible) return;
+  const a = sparkles.geometry.attributes.position, ph = sparkles.userData.ph;
+  for (let i = 0; i < SPARK_N; i++) {
+    let z = a.getZ(i) + dz;
+    if (z > 6) z -= 56;
+    a.setXYZ(i, a.getX(i) + Math.sin(t * 0.7 + ph[i]) * 0.004, a.getY(i) + Math.sin(t * 1.3 + ph[i] * 2) * 0.004, z);
+  }
+  a.needsUpdate = true;
+}
+
+// ---- roadside scenery: slots recycled along both sides; a slot takes its season's model when it respawns ahead ----
+const SCENERY_SPAN = 96, SCENERY_N = 30, TUFT_N = 36;
+const sceneryPool = new Map(); // 'name|h' -> [groups]
+const slots = [];               // { set: 'main' | 'tuft', i, z0, g, season }
+function slotEntry(sl, season) {
+  return sl.set === 'tuft' ? [season.tufts[sl.i % 3], 0.45, 'tuft'] : season.scenery[(sl.i * 7) % season.scenery.length];
+}
+function placeSlot(sl, season, z, rnd) {
+  const [name, h, kind] = slotEntry(sl, season), key = name + '|' + h;
+  if (sl.g) { scene.remove(sl.g); const l = sceneryPool.get(sl.g.userData.key) || []; l.push(sl.g); sceneryPool.set(sl.g.userData.key, l); }
+  let g = (sceneryPool.get(key) || []).pop();
+  if (!g) {
+    g = shadows(wrap(propSrc[name].clone(true), h, false, isTripo.has(baseName(name))));
+    g.userData.key = key; g.userData.name = name;
+  }
+  let x;
+  if (kind === 'tuft') {
+    x = (sl.i % 2 ? 1 : -1) * (PATH_W / 2 + 0.2 + rnd() * 2.5);
+    g.scale.setScalar(0.78 + rnd() * 0.44);
+  } else {
+    // camera sits on the right: edge props (bench, signpost) only on the left, right-side props stand further out
+    const side = kind === 'edge' ? -1 : sl.i % 2 ? 1 : -1;
+    x = side * (PATH_W / 2 + (kind === 'tree' ? 3.5 : 1.3) + (side > 0 ? 1.5 : 0) + rnd() * 5);
+    g.scale.setScalar(0.85 + rnd() * 0.3);
+    if (kind === 'edge') x = side * (PATH_W / 2 + 0.8);
+  }
+  g.position.set(x, 0, z);
+  g.rotation.y = kind === 'edge' ? Math.sign(x) * -Math.PI / 2 : rnd() * Math.PI * 2;
   // shadows: only near things cast (the sun's shadow box is ~20 m wide); trees further than 7 m out skip the shadow pass
-  const x = side * (PATH_W / 2 + (kind === 'tree' ? 3.5 : 1.3) + (side > 0 ? 1.5 : 0) + Math.random() * 5);
-  const g = prop(name, h * (0.85 + Math.random() * 0.3), false, Math.abs(x) < 7);
-  g.position.set(x, 0, DESPAWN_Z - (i / SCENERY_N) * SCENERY_SPAN);
-  g.rotation.y = Math.random() * Math.PI * 2;
-  if (kind === 'edge') { g.position.x = side * (PATH_W / 2 + 0.8); g.rotation.y = side * -Math.PI / 2; }
-  scene.add(g); scenery.push(g);
+  const cast = kind !== 'tuft' && Math.abs(x) < 7;
+  g.traverse((o) => { if (o.isMesh) o.castShadow = cast; });
+  scene.add(g);
+  sl.g = g; sl.season = season;
 }
-// grass tufts close to the path so the ground reads as moving
-for (let i = 0; i < 36; i++) {
-  const side = i % 2 ? 1 : -1;
-  const g = prop(i % 3 ? 'Grass_1_A' : 'Grass_2_A', 0.35 + Math.random() * 0.2, false, false);
-  g.position.set(side * (PATH_W / 2 + 0.2 + Math.random() * 2.5), 0, DESPAWN_Z - (i / 36) * SCENERY_SPAN);
-  g.rotation.y = Math.random() * Math.PI * 2;
-  scene.add(g); scenery.push(g);
+for (let i = 0; i < SCENERY_N; i++) slots.push({ set: 'main', i, z0: DESPAWN_Z - (i / SCENERY_N) * SCENERY_SPAN });
+for (let i = 0; i < TUFT_N; i++) slots.push({ set: 'tuft', i, z0: DESPAWN_Z - (i / TUFT_N) * SCENERY_SPAN });
+for (const sl of slots) placeSlot(sl, SEASONS[0], sl.z0, Math.random);
+// run start: slots of another season go back to `season` in place; test hook (rnd = seeded): every slot re-laid the same way
+function resetScenery(season, rnd) {
+  for (const sl of slots) if (rnd || sl.season !== season) placeSlot(sl, season, rnd ? sl.z0 : sl.g.position.z, rnd || Math.random);
+  if (rnd) house.position.z = -40;
 }
-// a cottage far off on the left, recycled with the rest
-{ const g = prop('house', 6, false, false); g.position.set(-16, 0, -40); g.rotation.y = Math.PI * 0.3; scene.add(g); scenery.push(g); }
+function mulberry(seed) {
+  return () => { seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+}
+// a cottage far off on the left, recycled with the rest (every season)
+const house = prop('house', 6, false, false); house.position.set(-16, 0, -40); house.rotation.y = Math.PI * 0.3; scene.add(house);
+// winter (Ruben 2026-11-08): snow on the house roof, in code. Cloned house materials get SNOW_GLSL on up-facing faces
+// above 2.3 m (roof only: walls, door, porch + bushes stay), driven by the season snow value (same 4 s blend).
+const houseSnow = { value: 0 };
+{
+  const cache = new Map();
+  const snowy = (m) => {
+    if (cache.has(m)) return cache.get(m);
+    const c = m.clone();
+    c.onBeforeCompile = (sh) => {
+      sh.uniforms.uSnowAmt = houseSnow;
+      sh.vertexShader = 'varying float vWY;\n' + sh.vertexShader.replace('#include <project_vertex>',
+        '#include <project_vertex>\nvWY = (modelMatrix * vec4(transformed, 1.0)).y;');
+      sh.fragmentShader = 'uniform float uSnowAmt;\nvarying float vWY;\n' + sh.fragmentShader.replace('#include <normal_fragment_maps>',
+        '#include <normal_fragment_maps>\n' + SNOW_GLSL.replace('uSnowAmt *', 'uSnowAmt * smoothstep(2.1, 2.5, vWY) *').replace('smoothstep(0.35, 0.8, up)', 'smoothstep(0.15, 0.5, up)'));
+    };
+    c.customProgramCacheKey = () => 'houseSnow';
+    cache.set(m, c);
+    return c;
+  };
+  house.traverse((o) => { if (o.isMesh) o.material = Array.isArray(o.material) ? o.material.map(snowy) : snowy(o.material); });
+}
+// compile the leaf-shift variants now, not on their first appearance at 7500 pts (no hitch mid-run)
+{
+  const holder = new THREE.Group();
+  for (const id of Object.keys(propSrc)) if (id.includes('@')) holder.add(shadows(propSrc[id].clone(true)));
+  renderer.compile(holder, camera, scene);
+}
 
 // ---- obstacles: cacti (a nod to Chrome), crates, rocks, bushes, log hurdles (jump); flying birds (duck or jump) ----
 // Gameplay boxes are FIXED numbers (the old KayKit props' measured boxes, 2026-11-08): y1 = hitbox top, hz = half depth.
@@ -665,7 +951,7 @@ function reset() {
   speed = SPEED0; dist = 0; nextGap = FIRST_GAP; firstPending = true; nextKind = 'ground'; vy = 0; y = 0; ducking = false; blinkT = 0; lastMilestone = 0; runT = 0;
   keyDuck = hookDuck = false; duckTimer = 0; for (const f of fingers.values()) { f.duck = false; f.jumped = false; } jumpFinger = null;
   pauseOn = false; countT = 0; countEl.classList.remove('on');
-  tier = 1; bannerT = 0; snapSky('day');
+  tier = 1; bannerT = 0; snapSky('day'); snapSeasonTint(SEASONS[0]); resetScenery(SEASONS[0]);
   schiffy.position.y = 0;
 }
 function start() {
@@ -823,10 +1109,10 @@ function step(dt) {
   const tierNow = SPEED_TIERS.filter((v) => speed >= v - 1e-6).length;
   if (tierNow > tier) { tier = tierNow; bannerT = BANNER_T; bannerEl.textContent = 'SPEED ' + tier; sfx('tier'); }
   if (bannerT > 0) bannerT -= dt;
-  updateSky(score(), dt);
-  audio?.setNight(skyTo === 'night'); // music: same tune, softer + low-passed at night
   const dz = speed * dt;
   dist += dz;
+  updateSky(score(), dt); updateSeason(score(), dt); // after the move: sky + season always match the shown score
+  audio?.setNight(skyTo === 'night'); // music: same tune, softer + low-passed at night
 
   // milestone every 100 points: blink + chime
   const m = Math.floor(score() / 100) * 100;
@@ -858,7 +1144,14 @@ function step(dt) {
   pathTex.offset.y += dz / (120 / 30);
   grassTex.offset.y += dz / (120 / 30);
   // right-side props recycle early: the camera sits on that side and they would clip through it
-  for (const s of scenery) if ((s.position.z += dz) > (s.position.x > 0 ? -1.5 : DESPAWN_Z)) s.position.z -= SCENERY_SPAN;
+  for (const sl of slots) {
+    const g = sl.g;
+    if ((g.position.z += dz) <= (g.position.x > 0 ? -1.5 : DESPAWN_Z)) continue;
+    // respawn ahead (in the fog): a new season swaps the model here, never on screen
+    if (sl.season !== seasonNow) placeSlot(sl, seasonNow, g.position.z - SCENERY_SPAN, Math.random); else g.position.z -= SCENERY_SPAN;
+  }
+  if ((house.position.z += dz) > DESPAWN_Z) house.position.z -= SCENERY_SPAN;
+  stepSparkles(dz, runT);
 
   for (let i = obstacles.length - 1; i >= 0; i--) {
     const o = obstacles[i];
@@ -912,6 +1205,11 @@ window.__runner = {
   setCam(p, l) { camera.position.set(...p); camera.lookAt(...l); },
   paused: false,
   get state() { return state; }, get audio() { return audio; }, get muted() { return muted; }, get tier() { return tier; }, get skyPhase() { return skyTo; }, get skyBlend() { return skyK; },
+  get season() { return seasonNow.id; }, get seasonBlend() { return seasonK; }, get housePos() { return house.position.toArray(); },
+  // test hook: season of the current score at once (tint snapped, every slot re-laid from a seed = same layout each call)
+  snapSeason(seed = 1) { const s = seasonAt(score()); snapSeasonTint(s); resetScenery(s, mulberry(seed)); return s.id; },
+  get scenery() { return slots.map((sl) => ({ id: sl.g.id, name: sl.g.userData.name, x: +sl.g.position.x.toFixed(3), z: +sl.g.position.z.toFixed(3), season: sl.season.id })); },
+  get groundTint() { const a = grass.material.color, b = path.material.color; return [a.r, a.g, a.b, b.r, b.g, b.b, grass.material.userData.snow.value, grass.material.userData.fairy.value]; },
   get dist() { return dist; }, set dist(v) { dist = v; lastMilestone = Math.floor(score() / 100) * 100; }, get speed() { return speed; }, get score() { return score(); }, get y() { return y; },
   obstacles, start, pressJump, releaseJump,
   setDuck(v) { hookDuck = v; updDuck(); },
@@ -923,6 +1221,12 @@ window.__runner = {
   get speedLock() { return speedLock; }, set speedLock(v) { speedLock = v; },
   spawnHive, spawnFlyer, spawnGround, spawnLong,
   step(n = 1, dt = 1 / 60) { for (let i = 0; i < n; i++) step(dt); },
+  // sky isles on screen (shot crops): centre px + rough radius px
+  skyScreen() {
+    const w = renderer.domElement.clientWidth, h = renderer.domElement.clientHeight;
+    return skyThings.map((s) => { const b = new THREE.Box3().setFromObject(s), v = b.getCenter(new THREE.Vector3()).project(camera), e = b.max.clone().project(camera);
+      return { x: (v.x + 1) / 2 * w, y: (1 - v.y) / 2 * h, r: Math.abs(e.x - v.x) * w / 2 }; });
+  },
   // perf probe: render n frames synchronously (1-px readback forces the GPU to finish), ms per frame + last frame's info
   perf(n = 30) {
     const gl = renderer.getContext(), px = new Uint8Array(4);

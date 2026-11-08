@@ -7,7 +7,8 @@ Ruben's own Tripo models, prepped in Blender to replace KayKit / Tiny Treats pro
   `shots/tripo_prep/loadcheck.html` = proof page). Tripo PBR kept: base colour + normal map (+ metallic/roughness map
   where it varies; flat ones became constant factors). Tris: obstacles + hive tree 50k, scenery 32-40k, filler 20k.
 - Note: `fitHeight` re-centres by the bounding box, not the base; for trees that is a few cm off the trunk (fine).
-- Total: 23 files, 10.49 MB (budget 30 MB).
+- Total: 38 files, 16.22 MB (budget 30 MB; float_isle +0.40 MB, 2026-11-08; S2 winter pines + snowman +1.56 MB, 2026-11-08;
+  S3 fairy trees + bush + 6 mushrooms +3.24 MB, 2026-11-08).
 - Masters (raw, unchanged): `Asset Library/ours/runner/masters/<id>.glb`. Rebuild: `Asset Library/ours/runner/tools/prep.py`
   with `picks.json` (source paths, tier, height, cut/rotz). Checks: `check_render.py` + `compose_check.py` -> `shots/tripo_prep/<id>.png`,
   `loadcheck.py`; contact sheet `shots/tripo_prep/contact_sheet.png`.
@@ -37,6 +38,21 @@ Ruben's own Tripo models, prepped in Blender to replace KayKit / Tiny Treats pro
 | mushrooms | Downloads: `Downloads/Unsorted/tripo_convert_3701028c-1098-428f-af10-d942e6747029.glb` | new small filler | 0.6 | 0.46 x 0.47 | 20,000 | 0.31 | round-ish; random yaw is fine |
 | bench | Pawty: `Pawty/Furniture/colorful bench 3d model.glb` | bench_A | 0.9 | 0.87 x 1.15 | 19,999 | 0.40 | seat front faces +Z; the edge-prop rotation (side * -PI/2) then turns it to face the path, same as bench_A |
 | signpost | Pawty: `Pawty/Props & Items/cute signpost 3d model.glb` | mailbox | 1.1 | 0.45 x 1.06 | 20,000 | 0.22 | sign arm points along Z (run direction) at rotation 0; turn PI/2 to face the camera across the path |
+| float_isle | Elderglow: `Elderglow/Tiles & Terrain/float_isle_e_r2 (pawty).glb` (only Elderglow model allowed in Runner) | vn kit isle_float + isle_castle (all 4 sky isles) | 10 (scaled in game by max size, 10-27 m) | ~ | 36,000 | 0.40 | sky only, no fog; varied yaw / tilt / mirror in `ISLES` (main.js) |
+| pine_snow_a | Downloads: `Downloads/Unsorted/tripo_convert_a7171493-8969-424a-afb3-c34778330866.glb` (U102) | winter scenery (S2) | 5.2 | ~2.8 x 3.0 | 32,000 | 0.41 | snowy pine; random yaw is fine |
+| pine_snow_b | Downloads: `Downloads/Unsorted/tripo_convert_a990c8d3-c5a7-4278-8b49-a7e2785dc1c7.glb` (U104) | winter scenery (S2) | 5.0 | ~3.3 x 3.4 | 32,000 | 0.39 | snowy pine, fuller; random yaw is fine |
+| pine_snow_c | Downloads: `Downloads/Unsorted/tripo_convert_cacfad4b-0d88-4f2a-af9f-743c8062c75e.glb` (U122) | winter scenery (S2) | 5.0 | ~3.0 x 3.3 | 32,000 | 0.40 | snowy pine, darker needles; random yaw is fine |
+| snowman | Pawty: `Pawty/Props & Items/snowman 3d model.glb` | winter edge prop (S2, stands in for bench/signpost spots) | 1.3 | ~0.7 x 1.0 | 25,000 | 0.36 | top hat + red scarf; edge-prop rotation like the bench |
+| tree_fairy_blossom | Downloads: `Downloads/Unsorted/tripo_convert_2ec56a42-de9b-4482-ad58-88979ff21db5.glb` (U28) | fairy scenery (S3) | 4.8 | ~3.2 x 3.2 | 31,998 | 0.45 | blue-violet crown, pink blossoms; random yaw is fine |
+| tree_wisteria | Downloads: `Downloads/Unsorted/tripo_convert_04262872-fbe2-4e66-b93e-0371d9677054.glb` (U1) | fairy scenery (S3) | 4.8 | ~3.0 x 3.0 | 32,000 | 0.47 | purple wisteria weeping tree; random yaw is fine |
+| tree_twotier | Downloads: `Downloads/Unsorted/tripo_convert_1ba98ba2-8cc3-42db-8146-cf8f474115b3.glb` (U14) | fairy scenery (S3) | 5.0 | ~2.8 x 2.8 | 32,000 | 0.46 | purple two-tier crown, vine on trunk; random yaw is fine |
+| bush_berry_teal | Downloads: `Downloads/Unsorted/tripo_convert_92e0043e-1c51-4602-bffd-50bc3decaf0d.glb` (U89) | fairy bush (S3) | 1.0 | ~1.1 x 1.1 | 24,998 | 0.39 | teal leaves, blue berries; random yaw is fine |
+| shroom_teal | Downloads: `Downloads/Unsorted/tripo_convert_09c8c3e2-41bb-40d8-acca-1e58ffd311c4.glb` (U3) | fairy giant mushroom (S3), glows at night | 1.6 (2.0 / 1.7 in game) | ~1.2 | 25,000 | 0.25 | grass tuft base; random yaw is fine |
+| shroom_green | Downloads: `Downloads/Unsorted/tripo_convert_7c0b42de-13fe-4886-a690-863d87efb3e1.glb` (U74) | fairy giant mushroom (S3), no glow | 1.5 (1.8 in game) | ~1.2 | 25,000 | 0.25 | grass tuft base; random yaw is fine |
+| shroom_pink | Downloads: `Downloads/Unsorted/tripo_convert_eca8ebae-9043-4f51-a3df-da58bef8e393.glb` (U140) | fairy giant mushroom (S3), glows at night | 1.5 (1.9 in game) | ~1.3 | 25,000 | 0.29 | flower-petal cap; random yaw is fine |
+| shroom_purple | Downloads: `Downloads/Unsorted/tripo_convert_70cb0f8a-e769-41dd-8684-b3cb4d95347c.glb` (U68) | fairy mushroom, edge prop (S3), glows at night | 1.0 | ~0.9 | 20,000 | 0.12 | plain, untextured-looking (flat colour); random yaw is fine |
+| shroom_trio | Downloads: `Downloads/Unsorted/tripo_convert_9b7cfc15-bb2b-4e35-a10b-a96a65b3b9af.glb` (U95) | fairy mushroom cluster, edge prop (S3), glows at night | 1.0 | ~0.8 | 25,000 | 0.26 | 3 caps + leaves; edge rotation |
+| shroom_spotted | Downloads: `Downloads/Unsorted/tripo_convert_fa63915f-ca78-4fd6-ae6a-f5e3b34e1282.glb` (U153) | fairy mushroom (S3), glows at night | 1.3 (1.6 in game) | ~0.9 | 25,000 | 0.30 | pointed spotted cap; random yaw is fine |
 
 ## Gameplay sizes (obstacles keep the old prop height)
 
@@ -60,4 +76,24 @@ Ruben's own Tripo models, prepped in Blender to replace KayKit / Tiny Treats pro
 
 - Grass_1_A / Grass_2_A tufts (36 tiny instances near the path; a 20k-tri Tripo tuft x36 is not worth it).
 - No Tripo match: mailbox (signpost stands in), fence_straight as a fence (log replaces it as the hurdle).
-- Sky isles + clouds (Schiffy vn kit) are not part of this job. Flyers = rigged Tripo birds in `assets/birds` (crow + its CC-BY credit removed 2026-11-08).
+- Sky (2026-11-08): isles = float_isle above; clouds are made in code (main.js `cloudGeo`); `assets/schiffy-env/vn_kit.glb` is no longer loaded (file kept). Flyers = rigged Tripo birds in `assets/birds` (crow + its CC-BY credit removed 2026-11-08).
+
+## Winter (S2, 2026-11-08)
+
+- SCENERY_WINTER (main.js): mostly pine_snow_a/b/c (12 of 20 entries), plus 'name@frost' variants of tree_oak / tree_round /
+  tree_birch / bush_broadleaf / hedge_leafy / rock_boulders / rock_pile / fern (leaves shifted to a muted cool green + snow
+  white on up-facing surfaces, `LEAF.frost` + `SNOW_GLSL`, cloned materials), snowman + bench + signpost at the edge.
+  Tufts = Grass @frostgrass. Ground = code snow textures mixed in by `snowGround` (uSnow), not new files.
+- Looked at, not used: bare trees U45 (pruned stumps) and U7 (gnarled, spooky) from cosy-island tripo_map `dead` rows.
+
+## Fairy (S3, 2026-11-08)
+
+- Ruben's set: U28 blue-violet blossom tree + 6 coloured mushrooms (U3 / U74 / U140 / U68 / U95 / U153). Extra from the
+  Downloads search (cosy-island tripo_map 'Fantasy trees'): U1 wisteria, U14 two-tier, U89 teal berry bush (max 3).
+  Looked at, not used: U19 purple weeping (too close to U1), U26 / U66 / U67 / U103 teal trees, U73 blue bellflower.
+- SCENERY_FAIRY (main.js): the 3 purple trees + tree_blossom (pink) + 'tree_round@violet' / 'tree_birch@periwinkle' /
+  'bush_broadleaf@lilac' leaf variants, teal berry bushes, giant mushrooms beside the path (1.6-2.0 m), trio + plain purple
+  at the path edge. Tufts = Grass @lilacgrass. Glow mushrooms (all but the green one) = emissiveMap = map, masked to
+  saturated non-green texels (caps glow, stems + grass base don't), PAL `shroomGlow` (day 0.05 -> night 0.75), no lights.
+  Ground = code fairy textures mixed in by `snowGround` (uFairy): soft lilac grass, pale lavender / cream path.
+  Sparkles = one Points object (46 soft yellow motes beside the path, fairy only, brighter at night).
