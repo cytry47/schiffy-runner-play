@@ -6,7 +6,8 @@
   <title>Schiffy Runner</title>
   <style>
     html, body { margin: 0; height: 100%; overflow: hidden; background: #9fd3f0; touch-action: none; user-select: none;
-      -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+      -webkit-user-select: none; -webkit-tap-highlight-color: transparent;
+      -webkit-touch-callout: none; overscroll-behavior: none; }
     #view { position: absolute; inset: 0; }
     .ui { font-family: "Trebuchet MS", "Segoe UI", system-ui, sans-serif; font-weight: 800; color: #fff;
       text-shadow: 0 3px 0 #2d4a6b, 0 0 8px #2d4a6b88; }
@@ -14,18 +15,75 @@
       font-variant-numeric: tabular-nums; }
     #score .hi { opacity: .7; margin-right: 18px; font-size: .8em; }
     #score.blink .cur { visibility: hidden; }
+    /* body[data-ui] = title | run | pause | over (main.js setUi) drives which buttons / cards show */
+    #score { padding: 2px 12px 4px; border-radius: 16px; background: #2d4a6b55; }
+    body[data-ui="title"] #score, body[data-ui="over"] #score { display: none; }
     #card { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
       pointer-events: none; text-align: center; }
     #card .box { background: #2d4a6bcc; border: 4px solid #fff; border-radius: 26px; padding: 20px 40px 22px; }
+    #card.pop .box { animation: cardIn 0.35s cubic-bezier(.2, 1.6, .4, 1) both; }
+    @keyframes cardIn { from { transform: translateY(-30px) scale(.8); opacity: 0; } to { transform: none; opacity: 1; } }
     #card .t { font-size: 58px; line-height: 1; }
     #card .s { font-size: 22px; margin-top: 12px; }
     #card .k { font-size: 16px; margin-top: 10px; opacity: .85; font-weight: 600; }
+    #card .r { display: none; }
+    #card .b { font-size: 22px; margin-top: 6px; }
+    #card .b:empty { display: none; }
+    #card .nb { color: #ffd64a; font-size: 30px; margin-bottom: 4px; text-shadow: 0 3px 0 #8a5a00, 0 0 14px #ffb800cc;
+      animation: nbPulse 0.8s ease-in-out infinite alternate; }
+    @keyframes nbPulse { from { transform: scale(1); } to { transform: scale(1.12); } }
     #card.hide { display: none; }
-    /* credits: a small button on the start / game-over screens only, opens a panel */
-    #creditsBtn { position: absolute; left: 14px; top: 14px; width: 34px; height: 34px; border-radius: 50%;
-      border: 3px solid #fff; background: #2d4a6bcc; color: #fff; font: 800 18px "Trebuchet MS", system-ui, sans-serif;
-      cursor: pointer; padding: 0; }
-    #card.hide ~ #creditsBtn { display: none; }
+    /* game over: card sits in the upper part so the crash stays visible; restart hint shows after the 0.4 s lockout */
+    #card.over { align-items: flex-start; padding-top: 9vh; }
+    #card.over .k { opacity: 0; transition: opacity .2s; }
+    #card.over.armed .k { opacity: .9; animation: pulse 1s ease-in-out infinite alternate; }
+    /* title: logo + BEST at the top, prompt + hint at the bottom, Schiffy idles in the middle (reference frame) */
+    #card.title .box { position: absolute; inset: 4vh 12px 3vh; display: flex; flex-direction: column; align-items: center;
+      background: none; border: 0; padding: 0; }
+    #card.title .t { order: 0; font-size: clamp(44px, 9vw, 92px); color: #ffd64a; letter-spacing: 2px; transform: rotate(-3deg);
+      text-shadow: 0 5px 0 #8a5a00, 3px 3px 0 #2d4a6b, -3px 3px 0 #2d4a6b, 3px -2px 0 #2d4a6b, -3px -2px 0 #2d4a6b,
+        0 8px 18px #2d4a6b99; }
+    #card.title .b { order: 1; margin-top: 14px; padding: 2px 16px 4px; border-radius: 16px; background: #2d4a6b99; }
+    #card.title .s { order: 2; margin-top: auto; font-size: 30px; padding: 6px 26px 8px; border-radius: 30px;
+      background: #2d4a6bcc; border: 4px solid #fff; animation: pulse 0.9s ease-in-out infinite alternate; }
+    #card.title .k { order: 3; padding: 3px 14px 5px; border-radius: 12px; background: #2d4a6b99; opacity: 1; }
+    #card.title .r { order: 4; margin-top: 8px; font-size: 15px; font-weight: 600; opacity: .9; }
+    @keyframes pulse { from { transform: scale(1); } to { transform: scale(1.07); } }
+    /* rotate hint: title only, phone held upright (the reference frame is small there) */
+    @media (orientation: portrait) and (max-width: 600px) { #card.title .r { display: block; } #card.title .box { top: 62px; } }
+    /* pause card + resume countdown */
+    #pauseCard, #count { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+      text-align: center; pointer-events: none; }
+    body[data-ui="pause"] #pauseCard { display: flex; background: #2d4a6b40; }
+    #pauseCard .box { background: #2d4a6bcc; border: 4px solid #fff; border-radius: 26px; padding: 20px 40px 22px;
+      animation: cardIn 0.3s cubic-bezier(.2, 1.6, .4, 1) both; }
+    #pauseCard .t { font-size: 58px; line-height: 1; }
+    #pauseCard .s { font-size: 22px; margin-top: 12px; animation: pulse 0.9s ease-in-out infinite alternate; }
+    #soundBtn { pointer-events: auto; margin-top: 22px; font: 800 18px "Trebuchet MS", system-ui, sans-serif; color: #fff;
+      background: #2d4a6b; border: 3px solid #fff; border-radius: 20px; padding: 5px 18px 7px; cursor: pointer;
+      text-shadow: 0 2px 0 #1c3049; }
+    #count { font-size: 120px; }
+    #count.on { display: flex; }
+    #count span { animation: countPop 0.5s ease-out both; }
+    @keyframes countPop { from { transform: scale(1.8); opacity: 0; } 30% { opacity: 1; } to { transform: scale(1); opacity: .9; } }
+    /* speed tier banner (SPEED 2 ...), driven from main.js */
+    #banner { position: absolute; top: 18px; left: 50%; transform: translateX(-50%); font-size: 34px; letter-spacing: 3px;
+      opacity: 0; pointer-events: none; white-space: nowrap; }
+    /* round buttons, top-left: title/over = i, sound | run/pause = sound, pause (no overlap at 390 px) */
+    .rb { position: absolute; top: 14px; width: 34px; height: 34px; border-radius: 50%; border: 3px solid #fff;
+      background: #2d4a6bcc; color: #fff; font: 800 18px "Trebuchet MS", system-ui, sans-serif; cursor: pointer; padding: 0;
+      display: flex; align-items: center; justify-content: center; }
+    .rb svg { width: 18px; height: 18px; fill: #fff; stroke: #fff; stroke-width: 2; stroke-linecap: round; }
+    #creditsBtn { left: 14px; }
+    #muteBtn { left: 56px; }
+    #muteBtn .x { display: none; } #muteBtn.off .w { display: none; } #muteBtn.off .x { display: inline; }
+    #pauseBtn { left: 56px; display: none; }
+    #pauseBtn .pl { display: none; }
+    body[data-ui="run"] #creditsBtn, body[data-ui="pause"] #creditsBtn { display: none; }
+    body[data-ui="run"] #muteBtn, body[data-ui="pause"] #muteBtn { left: 14px; }
+    body[data-ui="run"] #pauseBtn, body[data-ui="pause"] #pauseBtn { display: flex; }
+    body[data-ui="run"] #muteBtn, body[data-ui="run"] #pauseBtn { opacity: .75; }
+    body[data-ui="pause"] #pauseBtn .pa { display: none; } body[data-ui="pause"] #pauseBtn .pl { display: inline; }
     #credits { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
       background: #0006; text-align: center; }
     #credits .box { background: #2d4a6bee; border: 4px solid #fff; border-radius: 22px; padding: 18px 28px; max-width: 80vw; }
@@ -33,22 +91,30 @@
     #credits p { margin: 6px 0; font: 600 14px system-ui, sans-serif; text-shadow: none; }
     #credits .k { margin-top: 12px; font-size: 13px; opacity: .8; }
     #credits.hide { display: none; }
-    @media (max-width: 600px) { #card .t { font-size: 38px; } #card .box { padding: 16px 22px; } #score { font-size: 22px; } }
+    @media (max-width: 600px) { #card .t, #pauseCard .t { font-size: 38px; } #card .box, #pauseCard .box { padding: 16px 22px; }
+      #score { font-size: 22px; } #banner { top: 58px; font-size: 28px; } #card.title .s { font-size: 24px; } #count { font-size: 96px; } }
+    @media (max-height: 450px) { #card.title .t { font-size: 48px; } #card.title .s { font-size: 22px; } #card.over { padding-top: 5vh; }
+      #card.title .b { margin-top: 6px; } }
   </style>
   <script type="importmap">
     { "imports": { "three": "./vendor/three/build/three.module.js", "three/addons/": "./vendor/three/addons/" } }
   </script>
 </head>
-<body>
+<body data-ui="title">
   <div id="view"></div>
   <div id="score" class="ui"></div>
-  <div id="card" class="ui"><div class="box"><div class="t">SCHIFFY RUNNER</div><div class="s">LOADING...</div><div class="k"></div></div></div>
-  <button id="creditsBtn" aria-label="Credits">i</button>
-  <!-- the crow model is CC-BY: this credit must stay reachable while it's used -->
+  <div id="banner" class="ui"></div>
+  <div id="card" class="ui"><div class="box"><div class="t">SCHIFFY RUNNER</div><div class="s">LOADING...</div><div class="b"></div><div class="k"></div><div class="r">Turn your phone sideways for a bigger view</div></div></div>
+  <div id="pauseCard" class="ui"><div class="box"><div class="t">PAUSED</div><div class="s"></div><button id="soundBtn" tabindex="-1">SOUND: ON</button></div></div>
+  <div id="count" class="ui"></div>
+  <button id="creditsBtn" class="rb" aria-label="Credits">i</button>
+  <button id="pauseBtn" class="rb" aria-label="Pause" tabindex="-1"><svg viewBox="0 0 24 24"><g class="pa" stroke="none"><rect x="5" y="4" width="5" height="16" rx="1"/><rect x="14" y="4" width="5" height="16" rx="1"/></g><path class="pl" stroke="none" d="M7 4l13 8-13 8z"/></svg></button>
+  <button id="muteBtn" class="rb" aria-label="Sound on" tabindex="-1"><svg viewBox="0 0 24 24"><path d="M3 9h4l5-4v14l-5-4H3z" stroke="none"/><g fill="none"><path class="w" d="M15.5 8.5a5 5 0 0 1 0 7M18 6a8.5 8.5 0 0 1 0 12"/><path class="x" d="M16 9l6 6M22 9l-6 6"/></g></svg></button>
   <div id="credits" class="ui hide"><div class="box"><div class="t">CREDITS</div>
-    <p>Crow model: "Bird" by Poly by Google (CC-BY)</p>
-    <p>Trees, rocks, props: KayKit by Kay Lousberg, Tiny Treats by Isa Lousberg (CC0)</p>
     <p>Schiffy and the Moku world by Moku</p>
+    <p>Trees, rocks, props and birds: our own models</p>
+    <p>Grass tufts: KayKit by Kay Lousberg (CC0)</p>
+    <p>Music and sound: made in code</p>
     <div class="k">Tap or press any key to close</div></div></div>
   <script type="module" src="./main.js"></script>
 </body>
