@@ -13,7 +13,7 @@ import { createLive } from './audio.js';
 // ---- tuning (Chrome dino rules, in metres and seconds) ----
 const SPEED0 = 14, SPEED_MID = 26, SPEED_MAX = 40;  // m/s
 const ACCEL = 0.40, ACCEL_LATE = 0.12;              // m/s gained per second: 14 -> 26 in ~30 s, then slower climb to 40 (~2 min more)
-const GRAVITY = 40, FAST_FALL = 90;
+const GRAVITY = 40, FAST_FALL = 160; // fast fall = Down / swipe down in the air, 4x gravity (Ruben 2026-11-08: was 90)
 // jump feel (Ruben: fair, not frame-perfect): a held jump is big and forgiving; a quick tap is a small hop.
 // hedge = hedge length in seconds of running (with hitbox margins). Live-tunable via window.__runner.tune.
 const TUNE = { jumpV: 14, jumpCut: 3, hedge: 0.36 };
@@ -24,12 +24,17 @@ const LONG_FROM = 100;                             // long hedges (need a held j
 // the hive bottom (0.9 m) to far above a full jump, so only a duck passes (ducked Schiffy ~0.72 m, upright 1.3 m).
 const HIVE_FROM = 150, HIVE_Y0 = 0.9, HIVE_Y1 = 9, HIVE_BRANCH_Y = 2.55;
 const HIVE_OAK_YAW = Math.PI, HIVE_X = 0.6, HIVE_BEFORE = 1.0, HIVE_AFTER = 0.8;         // s of running before (landed + ducked) / after (stand up + jump)
+// jump-then-duck combo (Ruben 2026-11-08): one ground prop, then a beehive branch COMBO_T s of running behind it (centre to
+// centre). Jump the prop, press Down (fast fall), land ducked under the hive; a normal fall from a mid-timed jump lands
+// too late. From score 1000, ~COMBO_P of spawns, only between plain ground spawns (no bird / hive / hedge next to it).
+// Measured slack: tools/bot.py combo checks.
+const COMBO_FROM = 1000, COMBO_T = 0.35, COMBO_P = 0.17;
 const SCHIFFY_H = 1.3, DUCK_SCALE = 0.55;
-// flyers (2026-11-08): owl / hummingbird / yellow bird, random per spawn. Hitbox stays the crow's: 0.4 m tall from the
+// flyers (2026-11-08): owl / hummingbird / blue bird (replaced the 'crooked' yellow bird, Ruben 2026-11-08), random per spawn. Hitbox stays the crow's: 0.4 m tall from the
 // spawn height, hz 0.35. h = visual height of the scaled model, centred on the hitbox.
 const FLYER_H = 0.75, FLYER_BOX = 0.4, FLYER_HZ = 0.35;
 // tone < 1 darkens the model a little so it stands out from the bright day / dusk background (tools/progression.py)
-const BIRDS = { owl: { h: 0.72, glide: true, tone: 0.4 }, hummingbird: { h: 0.8, glide: false, tone: 0.42 }, yellow_bird: { h: 0.72, glide: true, tone: 1 } };
+const BIRDS = { owl: { h: 0.72, glide: true, tone: 0.4 }, hummingbird: { h: 0.8, glide: false, tone: 0.42 }, blue_bird: { h: 0.72, glide: true, tone: 1.2 } };
 const SPAWN_Z = -75, DESPAWN_Z = 8;
 const HI_KEY = 'schiffy-runner.hi';
 // speed tiers: names for the existing ramp (no rule change). A banner shows when one is reached:
@@ -255,7 +260,7 @@ function trunkTop(obj) {
   return { top: s[Math.floor(s.length / 2)] - box.min.y, h: box.max.y - box.min.y };
 }
 
-// ---- birds: rigged Tripo birds (Fly loop, Glide for owl + yellow bird); face +Z = toward the runner ----
+// ---- birds: rigged Tripo birds (Fly loop, Glide for owl + blue bird); face +Z = toward the runner ----
 // each pooled bird = SkeletonUtils clone + its own mixer; the model is re-centred on its body (origin sits at the feet)
 const birdSrc = BIRD_IDS.map((id, i) => ({ id, gltf: birdGltfs[i], ...BIRDS[id] }));
 for (const b of birdSrc) b.gltf.scene.traverse((o) => { if (o.isMesh) [].concat(o.material).forEach((m) => m.color.multiplyScalar(b.tone)); });
@@ -361,10 +366,11 @@ for (let i = 0; i < 16; i++) {
 // ---- day / night cycle by score (Chrome-like, 2026-11-07): day -> dusk -> night -> dawn, repeating ----
 // each change blends over SKY_BLEND s of play. Fairness: night keeps a strong cool key light and darkens the
 // ground + sky more than the obstacles, so silhouettes stay as readable as by day (tools/progression.py measures it).
-// 2026-11-08 (S1): one full day + night per SEASON (7500 pts), the old 1600-pt proportions scaled up
+// 2026-11-08 (S1): one full day + night per SEASON, the old 1600-pt proportions scaled up
 // (day 0-700, dusk -900, night -1450, dawn -1600 of 1600). The season changes as dawn ends (low light).
-const SEASON_LEN = 7500, SKY_BLEND = 3;
-const PHASES = [[3280, 'day'], [4220, 'dusk'], [6800, 'night'], [7500, 'dawn']]; // [score end in the season, phase]
+// Ruben 2026-11-08 (after playing, 7500 was too late): SEASON_LEN 4000 = old proportions x 2.5.
+const SEASON_LEN = 4000, SKY_BLEND = 3;
+const PHASES = [[1750, 'day'], [2250, 'dusk'], [3625, 'night'], [4000, 'dawn']]; // [score end in the season, phase]
 const pal = (o) => {
   const out = {};
   for (const [k, v] of Object.entries(o)) out[k] = typeof v === 'number' ? v : Array.isArray(v) ? new THREE.Vector3(...v) : new THREE.Color(v);
@@ -444,7 +450,7 @@ function applySky() {
   moon.material.opacity = Math.max(0, (c.stars - 0.3) / 0.7); moon.visible = moon.material.opacity > 0.01;
 }
 
-// ---- seasons (S1, Ruben 2026-11-08): by points, meadow 0 -> autumn 7500 -> winter 15000 -> fairy 22500 -> meadow 30000 ----
+// ---- seasons (S1, Ruben 2026-11-08): by points, meadow 0 -> autumn 4000 -> winter 8000 -> fairy 12000 -> meadow 16000 ----
 // Each season = one full sky day + night (SEASON_LEN). A season only changes WHAT respawns ahead (far in the fog), so
 // nothing already on screen pops; ground + grass tint blend over SEASON_BLEND s. Obstacles are never touched.
 // Adding a season = a data entry in SEASONS (scenery list, tuft list, ground tint) + any leaf variants in LEAF.
@@ -676,7 +682,7 @@ const houseSnow = { value: 0 };
   };
   house.traverse((o) => { if (o.isMesh) o.material = Array.isArray(o.material) ? o.material.map(snowy) : snowy(o.material); });
 }
-// compile the leaf-shift variants now, not on their first appearance at 7500 pts (no hitch mid-run)
+// compile the leaf-shift variants now, not on their first appearance at 4000 pts (no hitch mid-run)
 {
   const holder = new THREE.Group();
   for (const id of Object.keys(propSrc)) if (id.includes('@')) holder.add(shadows(propSrc[id].clone(true)));
@@ -844,6 +850,20 @@ function spawnHive() {
   obstacles.push({ g, y0: HIVE_Y0, y1: HIVE_Y1, hz: 0.45, spin: 0, hive: true });
   return 1.2;
 }
+// combo: one ground prop at SPAWN_Z, the hive COMBO_T s of running behind it. name = optional ground kind (test hook)
+function spawnCombo(name) {
+  const k = GROUND_KINDS.find((g) => g.name === name) || GROUND_KINDS[Math.floor(Math.random() * GROUND_KINDS.length)];
+  const g = take(k);
+  g.position.set((Math.random() - 0.5) * 0.3, 0, SPAWN_Z);
+  g.rotation.y = k.yaw === 'fixed' ? 0 : k.yaw === 'z' ? (Math.random() < 0.5 ? 0 : Math.PI) : Math.random() * Math.PI * 2;
+  scene.add(g);
+  obstacles.push({ g, y0: 0, y1: k.y1, hz: k.hz, spin: 0, combo: true });
+  const d = speed * COMBO_T;
+  spawnHive();
+  const h = obstacles[obstacles.length - 1];
+  h.g.position.z = SPAWN_Z - d; h.combo = true;
+  return d + 1.2;
+}
 function spawnFlyer(bird) { // bird = optional id (test hook: force one species)
   // three heights like Chrome's pterodactyl: low = jump, mid = duck, high = harmless
   const hi = Math.floor(Math.random() * 3);
@@ -891,7 +911,7 @@ const card = document.getElementById('card');
 const bannerEl = document.getElementById('banner');
 let state = 'ready'; // ready | run | over
 let autoSpawn = true, speedLock = 0; // test hooks
-let speed = SPEED0, dist = 0, nextGap = 30, nextKind = 'ground', vy = 0, y = 0;
+let speed = SPEED0, dist = 0, nextGap = 30, nextKind = 'ground', comboPend = false, vy = 0, y = 0;
 // ducking = any duck source: Down key held, a swiped finger still down, the timed duck after a lifted swipe, test hook
 let keyDuck = false, hookDuck = false, duckTimer = 0;
 const fingers = new Map(); // pointerId -> { y0, t0 (runT), jumped, duck, duckT (runT of the swipe) }
@@ -948,7 +968,7 @@ function showTitle() {
 function reset() {
   for (const o of obstacles) give(o.g);
   obstacles.length = 0;
-  speed = SPEED0; dist = 0; nextGap = FIRST_GAP; firstPending = true; nextKind = 'ground'; vy = 0; y = 0; ducking = false; blinkT = 0; lastMilestone = 0; runT = 0;
+  speed = SPEED0; dist = 0; nextGap = FIRST_GAP; firstPending = true; nextKind = 'ground'; comboPend = false; vy = 0; y = 0; ducking = false; blinkT = 0; lastMilestone = 0; runT = 0;
   keyDuck = hookDuck = false; duckTimer = 0; for (const f of fingers.values()) { f.duck = false; f.jumped = false; } jumpFinger = null;
   pauseOn = false; countT = 0; countEl.classList.remove('on');
   tier = 1; bannerT = 0; snapSky('day'); snapSeasonTint(SEASONS[0]); resetScenery(SEASONS[0]);
@@ -1170,7 +1190,8 @@ function step(dt) {
   nextGap -= dz;
   if (autoSpawn && nextGap <= 0) {
     const prev = nextKind;
-    const len = prev === 'fly' ? spawnFlyer() : prev === 'long' ? spawnLong() : prev === 'hive' ? spawnHive() : spawnGround();
+    const len = prev === 'fly' ? spawnFlyer() : prev === 'long' ? spawnLong() : prev === 'hive' ? spawnHive()
+      : prev === 'combo' ? spawnCombo() : spawnGround();
     // pick the NEXT kind now: ground can come back-to-back (0.65 s), but a bird keeps 0.95 s so you have
     // landed from the last jump before you must duck / jump it (no bird hits mid-air you couldn't avoid)
     const r = Math.random(), sc = score();
@@ -1178,8 +1199,13 @@ function step(dt) {
       : sc > LONG_FROM && r > 0.8 ? 'long' : 'ground';
     // hive: ~17 % of spawns from score 150, never next to a bird; 1.0 s before it (landed and ducked), 0.8 s after
     if ((prev === 'fly' && nextKind === 'hive') || (prev === 'hive' && nextKind === 'fly')) nextKind = 'ground';
+    // combo: rolled per spawn from score 1000; it only follows a plain ground spawn (else a ground comes first) and a
+    // plain ground follows it, so no bird / hive / hedge is ever next to it. Gaps = ground's 0.65 s before, hive's 0.8 s after.
+    if (sc > COMBO_FROM && Math.random() < COMBO_P) comboPend = true;
+    if (prev === 'combo') nextKind = 'ground';
+    else if (comboPend) { nextKind = prev === 'ground' ? 'combo' : 'ground'; if (prev === 'ground') comboPend = false; }
     const before = nextKind === 'fly' ? 0.95 : nextKind === 'hive' ? HIVE_BEFORE : 0.65;
-    const minGap = speed * Math.max(before, prev === 'hive' ? HIVE_AFTER : 0) + len + 3;
+    const minGap = speed * Math.max(before, prev === 'hive' || prev === 'combo' ? HIVE_AFTER : 0) + len + 3;
     nextGap = minGap * (1 + Math.random() * 0.5);
   }
 
@@ -1219,7 +1245,7 @@ window.__runner = {
   get vy() { return vy; }, get duckScale() { return schiffyBody.scale.y; },
   get autoSpawn() { return autoSpawn; }, set autoSpawn(v) { autoSpawn = v; },
   get speedLock() { return speedLock; }, set speedLock(v) { speedLock = v; },
-  spawnHive, spawnFlyer, spawnGround, spawnLong,
+  spawnHive, spawnFlyer, spawnGround, spawnLong, spawnCombo,
   step(n = 1, dt = 1 / 60) { for (let i = 0; i < n; i++) step(dt); },
   // sky isles on screen (shot crops): centre px + rough radius px
   skyScreen() {
