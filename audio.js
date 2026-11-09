@@ -137,11 +137,13 @@ function scheduleBar(ctx, out, i, t0, rnd) {
 // ---------- the graph (live or offline) ----------
 function graph(ctx) {
   const master = ctx.createGain(), sfx = ctx.createGain(), music = ctx.createGain(), night = ctx.createBiquadFilter(), sfxLp = ctx.createBiquadFilter();
+  const sfxVol = ctx.createGain(), musicVol = ctx.createGain(); // settings sliders (1 = the mix as designed; offline renders keep 1)
   sfx.gain.value = SFX_BUS; music.gain.value = MUSIC_BUS;
   night.type = 'lowpass'; night.frequency.value = DAY_HZ; night.Q.value = 0.5;
   sfxLp.type = 'lowpass'; sfxLp.frequency.value = 7500; sfxLp.Q.value = 0.5; // LPS: takes the edge off bell / FM tops
-  sfxLp.connect(sfx); sfx.connect(master); music.connect(night); night.connect(master); master.connect(ctx.destination);
-  return { ctx, live: !(ctx instanceof OfflineAudioContext), master, sfx: sfxLp, music, night, busy: [], last: {}, session: null, nextBar: 0, nextT: 0 };
+  sfxLp.connect(sfx); sfx.connect(sfxVol); sfxVol.connect(master); music.connect(night); night.connect(musicVol); musicVol.connect(master);
+  master.connect(ctx.destination);
+  return { ctx, live: !(ctx instanceof OfflineAudioContext), master, sfx: sfxLp, music, night, sfxVol, musicVol, busy: [], last: {}, session: null, nextBar: 0, nextT: 0 };
 }
 /** play one SFX at time t (default now) through the sparse gates; returns its voice gain (for cut) or null */
 function play(G, name, t = G.ctx.currentTime, rnd = Math.random) {
@@ -184,11 +186,14 @@ function setNight(G, on, t) {
 
 // ---------- live API (main.js) ----------
 /** call from a real user gesture only; returns null if WebAudio is missing */
-export function createLive(muted) {
+/** volume slider 0..1 -> gain (squared: the slider feels even, 0.5 = -12 dB) */
+export const volGain = (v) => Math.max(0, Math.min(1, v)) ** 2;
+export function createLive(muted, vol = { music: 1, sfx: 1 }) {
   let ctx;
   try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch { return null; }
   const G = graph(ctx);
   G.master.gain.value = muted ? 0 : 1;
+  G.musicVol.gain.value = volGain(vol.music); G.sfxVol.gain.value = volGain(vol.sfx);
   let night = false;
   const timer = setInterval(() => musicPump(G, ctx.currentTime + 0.3), 50); // wake-up only; notes go on the ctx clock
   let paused = false; // game pause (main.js): stays silent even when the tab comes back
@@ -202,6 +207,8 @@ export function createLive(muted) {
     get musicOn() { return !!G.session; },
     setNight: (on) => { if (on !== night) { night = on; setNight(G, on, ctx.currentTime); } },
     setMuted: (m) => G.master.gain.setTargetAtTime(m ? 0 : 1, ctx.currentTime, 0.03),
+    setVolume: (music, sfx) => { G.musicVol.gain.setTargetAtTime(volGain(music), ctx.currentTime, 0.03); G.sfxVol.gain.setTargetAtTime(volGain(sfx), ctx.currentTime, 0.03); },
+    get volume() { return { music: G.musicVol.gain.value, sfx: G.sfxVol.gain.value }; },
     setPaused: (p) => { paused = p; if (p) ctx.suspend(); else if (!document.hidden) ctx.resume(); },
     stopTimer: () => clearInterval(timer),
   };

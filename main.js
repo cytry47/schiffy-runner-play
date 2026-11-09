@@ -947,8 +947,17 @@ function spawnFlyer(bird) { // bird = optional id (test hook: force one species)
 const MUTE_KEY = 'schiffy-runner.mute';
 let muted = false;
 try { muted = localStorage.getItem(MUTE_KEY) === '1'; } catch {}
+// settings menu (2026-11-08): every value in localStorage 'schiffy-runner.<key>'
+const SET = { music: 'schiffy-runner.music', sfx: 'schiffy-runner.sfx', fps: 'schiffy-runner.fps', calm: 'schiffy-runner.calm',
+  lefty: 'schiffy-runner.lefty', stats: 'schiffy-runner.stats', runs: 'schiffy-runner.runs' };
+const lsGet = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
+const lsNum = (k, d) => { const v = lsGet(k); return v === null || v === '' || !isFinite(+v) ? d : Math.max(0, Math.min(100, +v)); };
+let volMusic = lsNum(SET.music, 100), volSfx = lsNum(SET.sfx, 100); // 0-100 sliders
+let fpsOn = lsGet(SET.fps) === '1', calm = lsGet(SET.calm) === '1', lefty = lsGet(SET.lefty) === '1';
+document.body.classList.toggle('calm', calm); document.body.classList.toggle('lefty', lefty);
 let audio = null; // null until a real key / tap (test hooks never make one, so bot runs stay silent)
-function ensureAudio() { if (!audio) audio = createLive(muted); }
+function ensureAudio() { if (!audio) audio = createLive(muted, { music: volMusic / 100, sfx: volSfx / 100 }); }
 const sfx = (name) => (audio ? audio.play(name) : null);
 let jumpVoice = null, wasDuck = false;
 const muteBtn = document.getElementById('muteBtn');
@@ -957,6 +966,7 @@ function setMute(m) {
   muteBtn.classList.toggle('off', m); muteBtn.setAttribute('aria-label', m ? 'Sound off' : 'Sound on');
   soundBtn.textContent = m ? 'SOUND: OFF' : 'SOUND: ON';
   audio?.setMuted(m);
+  syncSettings?.();
 }
 const soundBtn = document.getElementById('soundBtn');
 muteBtn.classList.toggle('off', muted);
@@ -988,12 +998,12 @@ function drawBanner() {
   bannerOff = false;
   const a = BANNER_T - bannerT; // pop in 0.15 s, hold, fade the last 0.3 s
   bannerEl.style.opacity = Math.min(1, a / 0.15, bannerT / 0.3);
-  bannerEl.style.transform = `translateX(-50%) scale(${1 + 0.25 * Math.max(0, 1 - a / 0.15)})`;
+  bannerEl.style.transform = `translateX(-50%) scale(${calm ? 1 : 1 + 0.25 * Math.max(0, 1 - a / 0.15)})`; // reduce flashes: no pop
 }
 function drawScore() {
   const html = (hi ? `<span class="hi">HI ${pad(hi)}</span>` : '') + `<span class="cur">${pad(blinkT > 0 ? lastMilestone : score())}</span>`;
   if (html !== scoreHtml) { scoreHtml = html; scoreEl.innerHTML = html; }
-  const bl = blinkT > 0 && Math.floor(blinkT * 4) % 2 === 0;
+  const bl = !calm && blinkT > 0 && Math.floor(blinkT * 4) % 2 === 0; // reduce flashes: the 100-pt score blink is off (chime stays)
   if (bl !== scoreBlink) { scoreBlink = bl; scoreEl.classList.toggle('blink', bl); }
 }
 function showCard(mode, t, s, k, best = '') {
@@ -1010,9 +1020,9 @@ function setUi(mode) { document.body.dataset.ui = mode; }
 // controls hint per device: coarse pointer = touch; switches live on the first real touch / key
 let touch = matchMedia('(pointer: coarse)').matches;
 const hints = () => touch
-  ? { run: 'TAP TO RUN', again: 'Tap to run again', resume: 'Tap to resume',
+  ? { run: 'or tap anywhere to run', again: 'Tap to run again', resume: 'Tap to resume',
     keys: 'Tap = jump (hold = higher) · swipe down = duck (keep the finger down to stay ducked)' }
-  : { run: 'PRESS SPACE TO RUN', again: 'Space to run again', resume: 'Space / P to resume',
+  : { run: 'or press Space to run', again: 'Space to run again', resume: 'Space / P to resume',
     keys: 'Space / Up = jump (hold = higher) · Down = duck · P = pause · M = sound' };
 function setTouch(t) {
   if (t === touch) return;
@@ -1021,6 +1031,7 @@ function setTouch(t) {
   if (state === 'ready') showTitle();
   else if (state === 'over') card.querySelector('.k').textContent = h.again;
   pauseCardS.textContent = h.resume;
+  markDevice();
 }
 function showTitle() {
   const h = hints();
@@ -1040,7 +1051,7 @@ function reset() {
 function start() {
   reset();
   state = 'run';
-  card.classList.add('hide'); setUi('run');
+  card.classList.add('hide'); setUi('run'); document.activeElement?.blur?.();
   idleAct.stop(); jumpAct.stop();
   runAct.reset().play();
   sfx('ui'); audio?.musicStart(); wasDuck = false;
@@ -1051,10 +1062,12 @@ function gameOver() {
   const s = Math.floor(score());
   const best = s > hi;
   if (best) { hi = s; try { localStorage.setItem(HI_KEY, String(hi)); } catch {} if (audio) setTimeout(() => state === 'over' && sfx('best'), 900); }
+  const place = recordRun(s);
   mixer.timeScale = 0; // freeze the pose like Chrome freezes the dino
   countEl.classList.remove('on');
   showCard('over', 'GAME OVER', `SCORE ${pad(s)}`, hints().again,
-    (best ? '<div class="nb">NEW BEST!</div>' : '') + `<div>BEST ${pad(hi)}</div>`);
+    (best ? '<div class="nb">NEW BEST!</div>' : '') + `<div class="bl"><span>BEST ${pad(hi)}</span>`
+    + (place ? `<span class="lb">#${place} on your leaderboard</span>` : '') + '</div>');
   setUi('over');
 }
 
@@ -1081,11 +1094,6 @@ function releaseJump() {
   if (state === 'run' && vy > TUNE.jumpCut) { vy = TUNE.jumpCut; audio?.cut(jumpVoice); } // short hop on a quick tap, like Chrome (the boing tail is cut = smaller sound)
 }
 
-// credits panel (start / game-over screens): taps on it never start a run
-const creditsEl = document.getElementById('credits');
-const creditsOpen = () => !creditsEl.classList.contains('hide');
-document.getElementById('creditsBtn').addEventListener('click', () => creditsEl.classList.remove('hide'));
-creditsEl.addEventListener('click', () => creditsEl.classList.add('hide'));
 
 function updDuck() {
   let f = false;
@@ -1124,7 +1132,7 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) { dro
 addEventListener('blur', () => { dropInputs(); pauseGame(); });
 
 addEventListener('keydown', (e) => {
-  if (creditsOpen()) { creditsEl.classList.add('hide'); e.preventDefault(); return; }
+  if (menuKey(e)) return; // menu panels + card buttons (arrows / Enter / Esc) never reach the game
   if (e.repeat) return;
   ensureAudio(); setTouch(false);
   if (e.code === 'KeyM') { setMute(!muted); return; }
@@ -1133,6 +1141,7 @@ addEventListener('keydown', (e) => {
   if (e.code === 'ArrowDown' || e.code === 'KeyS') { e.preventDefault(); if (state === 'run') { keyDuck = true; updDuck(); } }
 });
 addEventListener('keyup', (e) => {
+  if (e.code === 'Space' && e.target.closest?.('button')) e.preventDefault(); // Space is the jump key, never a button click
   if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW') releaseJump();
   if (e.code === 'ArrowDown' || e.code === 'KeyS') { keyDuck = false; updDuck(); }
 });
@@ -1140,7 +1149,7 @@ addEventListener('keyup', (e) => {
 // keep that finger down = stay ducked until it lifts; a quick flick (lift within DUCK_HOLD_T) = duck for DUCK_TAP_T. Every finger is tracked by
 // pointerId, only the finger that jumped can cut the jump, and no tap jumps while ducked (multi-touch safe).
 addEventListener('pointerdown', (e) => {
-  if (e.target.closest('button, #credits')) return;
+  if (e.target.closest('button, input, #menu')) return; // menu / card buttons: never a jump (they act on click)
   ensureAudio(); setTouch(e.pointerType === 'touch');
   const f = { y0: e.clientY, t0: runT, jumped: false, duck: false };
   fingers.set(e.pointerId, f);
@@ -1172,6 +1181,169 @@ addEventListener('pointercancel', fingerUp);
 addEventListener('contextmenu', (e) => e.preventDefault());
 document.addEventListener('gesturestart', (e) => e.preventDefault());
 document.addEventListener('dblclick', (e) => e.preventDefault());
+
+// ---- main menu (2026-11-08): title card = menu (PLAY, SETTINGS, HOW TO PLAY, STATS, CREDITS); panels in #menu ----
+// body[data-panel] = the open panel. Keyboard: arrows move between buttons (Up / Down = rows, Left / Right = inside a row,
+// sliders take Left / Right), Enter = press, Esc = back. On the title, Space / W / Up (nothing focused) start a run at once.
+const menuEl = document.getElementById('menu');
+const panelOf = () => document.body.dataset.panel || null;
+const qBtns = [...document.querySelectorAll('#qSeg [data-q]')];
+const el = (id) => document.getElementById(id);
+function openMenu(name) {
+  if (name === 'stats') drawStats();
+  if (name === 'board') drawBoard();
+  if (name === 'howto') markDevice();
+  if (name === 'settings') syncSettings();
+  for (const p of menuEl.querySelectorAll('.panel')) p.classList.toggle('on', p.dataset.p === name);
+  document.body.dataset.panel = name;
+  dropInputs();
+  const first = menuEl.querySelector('.panel.on .mi');
+  if (first && !touch) first.focus(); else document.activeElement?.blur?.();
+}
+function closeMenu() {
+  const p = panelOf();
+  if (p === 'reload') return;
+  if (p === 'confirm') { openMenu('settings'); el('resetBest').focus(); return; }
+  delete document.body.dataset.panel;
+  for (const q of menuEl.querySelectorAll('.panel')) q.classList.remove('on');
+  const back = p && document.querySelector(`[data-open="${p}"]`);
+  if (back && state === 'ready' && !touch) back.focus(); else document.activeElement?.blur?.();
+}
+function markDevice() { for (const d of menuEl.querySelectorAll('[data-dev]')) d.classList.toggle('cur', (d.dataset.dev === 'touch') === touch); }
+function syncSettings() {
+  const q = getQuality().choice;
+  for (const b of qBtns) b.classList.toggle('sel', b.dataset.q === q);
+  el('volMusic').value = volMusic; el('volSfx').value = volSfx;
+  const tg = (id, on) => { const b = el(id); b.textContent = on ? 'ON' : 'OFF'; b.classList.toggle('on', on); };
+  tg('setMute', muted); tg('setFps', fpsOn); tg('setCalm', calm); tg('setLefty', lefty);
+}
+const fmtT = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+const seasonName = (i) => { const id = SEASONS[i % SEASONS.length].id; return id[0].toUpperCase() + id.slice(1) + (i >= SEASONS.length ? ` (lap ${Math.floor(i / SEASONS.length) + 1})` : ''); };
+function loadStats() { try { return { runs: 0, longestS: 0, seasonMax: 0, ...JSON.parse(lsGet(SET.stats) || '{}') }; } catch { return { runs: 0, longestS: 0, seasonMax: 0 }; } }
+function loadRuns() { try { const r = JSON.parse(lsGet(SET.runs) || '[]'); return Array.isArray(r) ? r : []; } catch { return []; } }
+// every finished run: stats + the top 10 runs by score (for the local leaderboard). Game over always counts; leaving
+// through the pause card's MAIN MENU counts only when the score is > 0 (and can set a new best too).
+// returns the run's place on the leaderboard (1-10) or 0; lastRun = its date (the leaderboard highlights that row)
+let lastRun = null;
+function recordRun(sc) {
+  const seasonI = Math.floor(sc / SEASON_LEN), timeS = +runT.toFixed(1);
+  const st = loadStats();
+  st.runs++; st.longestS = Math.max(st.longestS, timeS); st.seasonMax = Math.max(st.seasonMax, seasonI);
+  lsSet(SET.stats, JSON.stringify(st));
+  const runs = loadRuns();
+  const me = { score: sc, date: new Date().toISOString(), season: seasonI, seasonName: SEASONS[seasonI % SEASONS.length].id, timeS };
+  runs.push(me); lastRun = me.date;
+  runs.sort((a, b) => b.score - a.score); // stable: a tie ranks below the older run
+  const top = runs.slice(0, 10);
+  lsSet(SET.runs, JSON.stringify(top));
+  return top.indexOf(me) + 1;
+}
+// leaderboard panel (Ruben 2026-11-08): top 10 local runs, no names; rank, score, date, season reached, run time
+const fmtD = (iso) => { const d = new Date(iso); return isNaN(d) ? '-' : d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' }); };
+function drawBoard() {
+  const runs = loadRuns().slice(0, 10), t = el('boardT');
+  t.innerHTML = runs.length ? '<tr><th>#</th><th>SCORE</th><th>DATE</th><th>SEASON</th><th>TIME</th></tr>' + runs.map((r, i) =>
+    `<tr${r.date === lastRun ? ' class="me"' : ''}><td>${i + 1}</td><td>${pad(r.score | 0)}</td><td>${fmtD(r.date)}</td>`
+    + `<td>${seasonName(r.season | 0)}</td><td>${isFinite(r.timeS) ? fmtT(r.timeS) : '-'}</td></tr>`).join('') : '';
+  el('boardEmpty').style.display = runs.length ? 'none' : '';
+}
+function drawStats() {
+  const st = loadStats();
+  el('statsDl').innerHTML = `<dt>Best score</dt><dd>${pad(hi)}</dd><dt>Runs played</dt><dd>${st.runs}</dd>`
+    + `<dt>Longest run</dt><dd>${st.runs ? fmtT(st.longestS) : '-'}</dd><dt>Furthest season</dt><dd>${st.runs ? seasonName(st.seasonMax) : '-'}</dd>`;
+}
+// back to the title / menu from game over or the pause card
+function toMenu() {
+  if (state === 'run') {
+    const sc = Math.floor(score());
+    if (sc > 0) { if (sc > hi) { hi = sc; lsSet(HI_KEY, String(hi)); } recordRun(sc); }
+    if (pauseOn) { pauseOn = false; audio?.setPaused(false); }
+    audio?.musicStop();
+  }
+  state = 'ready'; mixer.timeScale = 1;
+  reset();
+  runAct.stop(); jumpAct.stop(); idleAct.reset().play();
+  schiffyBody.scale.set(1, 1, 1); camera.position.y = CAM_POS.y;
+  showTitle();
+}
+function playNow(e) { ensureAudio(); if (e?.pointerType) setTouch(e.pointerType === 'touch'); if (state === 'ready') start(); }
+el('playBtn').addEventListener('click', playNow);
+el('retryBtn').addEventListener('click', (e) => { ensureAudio(); if (state === 'over' && overT > 0.4) { mixer.timeScale = 1; start(); } });
+el('overMenuBtn').addEventListener('click', () => { if (state === 'over' && overT > 0.4) { sfx('ui'); toMenu(); } });
+el('pauseMenuBtn').addEventListener('click', () => { if (pauseOn) toMenu(); });
+for (const b of document.querySelectorAll('[data-open]')) b.addEventListener('click', (e) => { ensureAudio(); if (e.pointerType) setTouch(e.pointerType === 'touch'); sfx('ui'); openMenu(b.dataset.open); });
+for (const b of menuEl.querySelectorAll('.back')) b.addEventListener('click', closeMenu);
+menuEl.addEventListener('click', (e) => { if (e.target === menuEl) closeMenu(); }); // tap outside the panel = back
+for (const b of qBtns) b.addEventListener('click', () => {
+  const r = setQuality(b.dataset.q); syncSettings();
+  if (r.reload) { openMenu('reload'); setTimeout(() => location.reload(), 350); }
+});
+el('volMusic').addEventListener('input', (e) => { volMusic = +e.target.value; lsSet(SET.music, volMusic); ensureAudio(); audio?.setVolume(volMusic / 100, volSfx / 100); });
+el('volSfx').addEventListener('input', (e) => { volSfx = +e.target.value; lsSet(SET.sfx, volSfx); ensureAudio(); audio?.setVolume(volMusic / 100, volSfx / 100); });
+el('volSfx').addEventListener('change', () => sfx('point')); // a sample at the new level
+el('setMute').addEventListener('click', () => { ensureAudio(); setMute(!muted); });
+el('setFps').addEventListener('click', () => { setFps(!fpsOn); lsSet(SET.fps, fpsOn ? '1' : '0'); syncSettings(); });
+el('setCalm').addEventListener('click', () => { calm = !calm; lsSet(SET.calm, calm ? '1' : '0'); document.body.classList.toggle('calm', calm); syncSettings(); });
+el('setLefty').addEventListener('click', () => { lefty = !lefty; lsSet(SET.lefty, lefty ? '1' : '0'); document.body.classList.toggle('lefty', lefty); syncSettings(); });
+el('resetBest').addEventListener('click', () => openMenu('confirm'));
+el('confirmYes').addEventListener('click', () => {
+  hi = 0; lastRun = null; try { localStorage.removeItem(HI_KEY); localStorage.removeItem(SET.runs); } catch {} // stats stay
+  if (state === 'ready') showTitle();
+  closeMenu();
+});
+// keyboard for panels and the card buttons; returns true when the key was used by the menu
+function navRows() {
+  const p = panelOf();
+  if (p) return [...menuEl.querySelectorAll('.panel.on .row')].map((r) => [...r.querySelectorAll('.mi')]).filter((r) => r.length);
+  if (state === 'ready') return [[el('playBtn')], [...document.querySelectorAll('#card .tm .mi')]];
+  if (state === 'over') return card.classList.contains('armed') ? [[el('retryBtn'), el('overMenuBtn')]] : [];
+  if (pauseOn) return [[el('soundBtn'), el('pauseMenuBtn')]];
+  return [];
+}
+function menuKey(e) {
+  const p = panelOf(), inMenu = p || state !== 'run' || pauseOn;
+  if (!inMenu || (state === 'run' && !pauseOn)) return false;
+  const rows = navRows(), act = document.activeElement;
+  let ri = rows.findIndex((r) => r.includes(act)), ci = ri >= 0 ? rows[ri].indexOf(act) : -1;
+  const go = (r, c) => { const row = rows[r]; if (!row) return; row[Math.max(0, Math.min(row.length - 1, c))].focus(); };
+  const k = e.code;
+  if (p) { // a panel is open: it takes every key (M still mutes)
+    if (e.repeat && !k.startsWith('Arrow')) { e.preventDefault(); return true; }
+    if (k === 'Escape' || k === 'Backspace') { e.preventDefault(); closeMenu(); }
+    else if (k === 'ArrowDown' || k === 'ArrowUp') {
+      e.preventDefault(); const d = k === 'ArrowDown' ? 1 : -1;
+      if (ri < 0) go(d > 0 ? 0 : rows.length - 1, 0); else go((ri + d + rows.length) % rows.length, Math.min(ci, rows[(ri + d + rows.length) % rows.length].length - 1));
+    } else if (k === 'ArrowLeft' || k === 'ArrowRight') {
+      if (act?.type === 'range') return true; // the slider moves itself
+      e.preventDefault(); if (ri < 0) go(0, 0); else go(ri, ci + (k === 'ArrowRight' ? 1 : -1));
+    } else if (k === 'Enter' || k === 'Space' || k === 'NumpadEnter') {
+      e.preventDefault(); if (ri >= 0 && act.type !== 'range') act.click();
+    } else if (k === 'KeyM') { ensureAudio(); setMute(!muted); }
+    return true;
+  }
+  // title / game over / pause card: arrows pick a button, Enter presses it (or does the card's default)
+  if (e.repeat) return false;
+  if (k === 'ArrowLeft' || k === 'ArrowRight' || (k === 'ArrowDown' && state === 'ready') || (k === 'ArrowUp' && ri > 0)) {
+    if (!rows.length) return false;
+    e.preventDefault(); setTouch(false);
+    const d = k === 'ArrowRight' || k === 'ArrowDown' ? 1 : -1;
+    if (k === 'ArrowDown' || k === 'ArrowUp') go(ri < 0 ? 0 : ri + d, ci);
+    else if (ri < 0) go(rows.length - 1, 0);
+    else if (rows[ri].length === 1) go(ri + (d > 0 ? 1 : 0), 0);
+    else go(ri, ci + d);
+    return true;
+  }
+  if (k === 'Enter' || k === 'NumpadEnter') {
+    e.preventDefault(); ensureAudio(); setTouch(false);
+    if (ri >= 0) act.click();
+    else if (state === 'ready') start();
+    else if (state === 'over') el('retryBtn').click();
+    else if (pauseOn) resumeGame();
+    return true;
+  }
+  if (k === 'Escape' && state === 'over') { e.preventDefault(); el('overMenuBtn').click(); return true; }
+  return false;
+}
 
 // ---- main loop ----
 const clock = new THREE.Clock();
@@ -1283,12 +1455,14 @@ function step(dt) {
 
 // perf overlay (2026-11-08, phone FPS check): add ?fps to the URL. Shows FPS averaged over 1 s, the slowest frame in
 // that second, triangles + draw calls of the last frame, pixel ratio and canvas size. Off by default, costs nothing then.
-const fpsEl = /[?&#]fps\b/.test(location.search + location.hash) ? document.createElement('div') : null;
-if (fpsEl) {
-  fpsEl.style.cssText = 'position:fixed;left:50%;bottom:6px;transform:translateX(-50%);z-index:99;pointer-events:none;'
-    + 'font:600 12px/1.3 monospace;color:#fff;background:#000a;padding:3px 8px;border-radius:6px;white-space:pre;text-align:center';
-  document.body.appendChild(fpsEl);
-}
+// Settings 'FPS counter' (schiffy-runner.fps) shows the same overlay; ?fps forces it on for that page.
+const fpsEl = document.createElement('div');
+fpsEl.id = 'fps';
+fpsEl.style.cssText = 'position:fixed;left:50%;bottom:6px;transform:translateX(-50%);z-index:99;pointer-events:none;'
+  + 'font:600 12px/1.3 monospace;color:#fff;background:#000a;padding:3px 8px;border-radius:6px;white-space:pre;text-align:center';
+document.body.appendChild(fpsEl);
+if (/[?&#]fps\b/.test(location.search + location.hash)) fpsOn = true;
+function setFps(on) { fpsOn = on; fpsEl.style.display = on ? '' : 'none'; if (on) { fpsEl.textContent = '...'; fpsN = fpsT = fpsWorst = 0; fpsLast = performance.now(); } }
 let fpsN = 0, fpsT = 0, fpsWorst = 0, fpsLast = performance.now();
 function fpsTick() {
   const now = performance.now(), ms = now - fpsLast; fpsLast = now;
@@ -1346,7 +1520,7 @@ function frame() {
   if (!window.__runner.paused) step(dt);
   drawScore(); drawBanner(); applySky();
   renderer.render(scene, camera);
-  if (fpsEl) fpsTick();
+  if (fpsOn) fpsTick();
   adaptTick();
   requestAnimationFrame(frame);
 }
@@ -1396,6 +1570,17 @@ window.__runner = {
   pauseGame, resumeGame, get fingerCount() { return fingers.size; },
   get cam() { return { fov: camera.fov, aspect: camera.aspect, w: renderer.domElement.clientWidth, h: renderer.domElement.clientHeight }; },
   get vy() { return vy; }, get duckScale() { return schiffyBody.scale.y; },
+  // Schiffy's screen rect in CSS px [left, top, right, bottom] (menu_check: the game-over card must not cover him)
+  schiffyRect() {
+    const bx = new THREE.Box3().setFromObject(schiffyBody), r = renderer.domElement.getBoundingClientRect(), v = new THREE.Vector3();
+    let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+    for (let i = 0; i < 8; i++) {
+      v.set(i & 1 ? bx.max.x : bx.min.x, i & 2 ? bx.max.y : bx.min.y, i & 4 ? bx.max.z : bx.min.z).project(camera);
+      const sx = r.left + (v.x + 1) / 2 * r.width, sy = r.top + (1 - v.y) / 2 * r.height;
+      x0 = Math.min(x0, sx); x1 = Math.max(x1, sx); y0 = Math.min(y0, sy); y1 = Math.max(y1, sy);
+    }
+    return [x0, y0, x1, y1];
+  },
   get autoSpawn() { return autoSpawn; }, set autoSpawn(v) { autoSpawn = v; },
   get speedLock() { return speedLock; }, set speedLock(v) { speedLock = v; },
   spawnHive, spawnFlyer, spawnGround, spawnLong, spawnCombo,
@@ -1420,7 +1605,12 @@ window.__runner = {
   // programs must not grow during play)
   get quality() { return { ...getQuality(), autoLow: AUTO_LOW, warm, programs: renderer.info.programs.length, textures: renderer.info.memory.textures }; },
   setQuality, getQuality,
+  // main menu (2026-11-08): openMenu('settings' | 'howto' | 'stats' | 'board' | 'credits' | 'confirm'), closeMenu(), toMenu() (= MAIN MENU / MENU button)
+  openMenu, closeMenu, toMenu, get panel() { return panelOf(); },
+  get settings() { return { quality: getQuality().choice, music: volMusic, sfx: volSfx, muted, fps: fpsOn, calm, lefty }; },
+  get stats() { return loadStats(); }, get runs() { return loadRuns(); }, get lastRun() { return lastRun; }, get hi() { return hi; }, get overT() { return overT; },
 };
 
+setFps(fpsOn);
 showTitle();
 frame();
