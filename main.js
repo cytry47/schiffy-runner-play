@@ -46,11 +46,48 @@ const SWIPE_EARLY = 0.2, DUCK_TAP_T = 0.7, DUCK_HOLD_T = 0.25, COUNT_T = 1.5;
 const swipePx = () => Math.max(18, Math.min(36, innerHeight * 0.06));
 
 // ---- renderer / scene ----
+// quality presets (phone perf, 2026-11-08: Ruben's Android ran 13 fps at 1.45M tris, dpr 2). Choice = 'auto' (default:
+// LOW on phones / tablets = coarse pointer, mobile UA or a small screen; HIGH on desktop; plus the adaptive render scale)
+// or a fixed 'verylow' / 'low' / 'mid' / 'high'. Priority: ?q=verylow|low|mid|high|auto > localStorage QUALITY_KEY > 'auto'.
+// Tiers reworked after Ruben's phone test (2026-11-08: old MID ~40 fps = good enough, old LOW 60 fps but too plain):
+// VERYLOW = the old LOW, LOW = the old MID (both load assets/tripo/lo), MID = new middle point (assets/tripo/md, ~2.5x
+// the phone tris, PCFSoft), HIGH = the full game exactly as before (Ruben: untouched, assets/tripo).
+// Build-time keys (models, lambert, msaa, tufts, cloudSeg, shadowSoft) need a reload to change; scale, shadow size and
+// scenery shadows apply live (setQuality). Gameplay, camera framing and hitboxes are the same in every preset.
+const QUALITY_KEY = 'schiffy-runner.quality', QUALITY_CHOICES = ['auto', 'verylow', 'low', 'mid', 'high'];
+const PRESETS = {
+  high: { models: 'tripo', lambert: false, msaa: true, shadowSoft: true, tufts: 36, cloudSeg: [20, 14], maxScale: 2, shadowPx: 1024, sceneryCast: true },
+  mid: { models: 'tripo/md', lambert: false, msaa: true, shadowSoft: true, tufts: 36, cloudSeg: [20, 14], maxScale: 1.5, shadowPx: 1024, sceneryCast: true },
+  low: { models: 'tripo/lo', lambert: false, msaa: true, shadowSoft: false, tufts: 36, cloudSeg: [20, 14], maxScale: 1.5, shadowPx: 1024, sceneryCast: true },
+  verylow: { models: 'tripo/lo', lambert: true, msaa: false, shadowSoft: false, tufts: 24, cloudSeg: [12, 8], maxScale: 1, shadowPx: 512, sceneryCast: false },
+};
+const BUILD_KEYS = ['models', 'lambert', 'msaa', 'shadowSoft', 'tufts', 'cloudSeg'];
+const QS = new URLSearchParams(location.search);
+const AUTO_LOW = matchMedia('(pointer: coarse)').matches || /Android|iPhone|iPad|iPod|Mobi/i.test(navigator.userAgent)
+  || Math.min(screen.width, screen.height) < 600;
+let qStored = null;
+try { qStored = localStorage.getItem(QUALITY_KEY); } catch {}
+let qChoice = [QS.get('q'), qStored].find((v) => QUALITY_CHOICES.includes(v)) || 'auto';
+const tierOf = (c) => (c === 'auto' ? (AUTO_LOW ? 'low' : 'high') : c);
+let QTIER = tierOf(qChoice);
+const BUILT = PRESETS[QTIER]; // what this page load was built with (models, materials, MSAA, tufts, clouds)
+let Q = { ...BUILT };          // live settings (scale cap, shadow size, scenery shadows)
+const LOW = BUILT.lambert;     // VERYLOW-only code paths (Lambert materials; was LOW before the 2026-11-08 rework)
+// test runs (Playwright sets navigator.webdriver) keep the drawing buffer for readbacks and never auto-adapt the scale
+const TESTING = navigator.webdriver || QS.has('test');
 const view = document.getElementById('view');
-const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+const renderer = new THREE.WebGLRenderer({ antialias: BUILT.msaa, preserveDrawingBuffer: TESTING, powerPreference: 'high-performance' });
+// adaptive render scale (AUTO only): pixel-ratio steps; start at the preset's cap, drop one when the 1-s fps stays
+// < ADAPT_LOW for ADAPT_DOWN_S, go back up one when it stays > ADAPT_HIGH for ADAPT_UP_S (never above the cap). Off in test runs.
+const SCALES = [2, 1.5, 1.25, 1, 0.85, 0.7];
+const scaleCap = () => { const i = SCALES.findIndex((s) => s <= Math.min(devicePixelRatio, Q.maxScale) + 1e-6); return i < 0 ? SCALES.length - 1 : i; };
+let scaleMax = scaleCap(), scaleI = scaleMax;
+const adaptOn = () => (qChoice === 'auto' && !TESTING) || QS.has('adapt');
+let ADAPT = adaptOn();
+const ADAPT_LOW = 40, ADAPT_HIGH = 57, ADAPT_DOWN_S = 3, ADAPT_UP_S = 6;
+renderer.setPixelRatio(SCALES[scaleI]);
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = BUILT.shadowSoft ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
 view.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -74,7 +111,7 @@ scene.add(hemi);
 const sun = new THREE.DirectionalLight('#fff4dc', 2.4);
 sun.position.set(4, 10, 4);
 sun.castShadow = true;
-sun.shadow.mapSize.set(1024, 1024);
+sun.shadow.mapSize.setScalar(Q.shadowPx);
 Object.assign(sun.shadow.camera, { left: -10, right: 10, top: 10, bottom: -22, near: 1, far: 40 });
 sun.shadow.bias = -0.0005;
 scene.add(sun, sun.target);
@@ -162,7 +199,15 @@ snowGround(path.material, noiseTex('#cfc6b8', ['#c0b5a5', '#dbd5cb', '#b7ab99', 
 // ---- loading ----
 const draco = new DRACOLoader().setDecoderPath('./vendor/three/addons/libs/draco/');
 const loader = new GLTFLoader().setDRACOLoader(draco);
-const load = (f) => loader.loadAsync('./assets/' + f);
+// loading progress + visible errors on the title card (2026-11-08: phone showed a bare "LOADING..." for 80+ s)
+const loadEl = document.querySelector('#card .s');
+let loadDone = 0, loadTotal = 0;
+const loadMsg = (t) => { if (loadEl) loadEl.textContent = t; };
+const showErr = (m) => loadMsg('ERROR: ' + String(m).slice(0, 160));
+addEventListener('error', (e) => showErr(e.message || e.error));
+addEventListener('unhandledrejection', (e) => showErr((e.reason && e.reason.message) || e.reason));
+const load = (f) => { loadTotal++; return loader.loadAsync('./assets/' + f).then((g) => {
+  loadDone++; loadMsg(`LOADING... ${Math.round(100 * loadDone / loadTotal)}%`); return g; }); };
 
 function fitHeight(obj, h, byMax = false) {
   const box = new THREE.Box3().setFromObject(obj);
@@ -206,13 +251,30 @@ const TRIPO = ['tree_oak', 'tree_round', 'tree_birch', 'tree_pine', 'tree_blosso
 const PACK_FILES = { forest: ['Grass_1_A', 'Grass_2_A'].map((n) => n + '_Color1') };
 const packList = Object.entries(PACK_FILES).flatMap(([dir, names]) => names.map((n) => [dir, n]));
 const BIRD_IDS = Object.keys(BIRDS);
+const TRIPO_DIR = BUILT.models; // VERYLOW + LOW: tripo/lo (3-8k tris), MID: tripo/md (~2.5x), HIGH: tripo (full); MAP.md. Only one set is downloaded
 const loaded = await Promise.all(
-  ['schiffy.glb', 'schiffy-clips.glb', 'tripo/float_isle.glb', ...BIRD_IDS.map((b) => `birds/${b}.glb`),
-    ...TRIPO.map((n) => `tripo/${n}.glb`), ...packList.map(([dir, n]) => `${dir}/${n}.gltf`)].map(load));
+  ['schiffy.glb', 'schiffy-clips.glb', `${TRIPO_DIR}/float_isle.glb`, ...BIRD_IDS.map((b) => `birds/${b}.glb`),
+    ...TRIPO.map((n) => `${TRIPO_DIR}/${n}.glb`), ...packList.map(([dir, n]) => `${dir}/${n}.gltf`)].map(load));
+loadMsg('PREPARING...');
 const [schiffyGltf, clipsGltf, isleGltf] = loaded;
 const birdGltfs = loaded.slice(3, 3 + BIRD_IDS.length);
 const tripoGltfs = loaded.slice(3 + BIRD_IDS.length, 3 + BIRD_IDS.length + TRIPO.length);
 const packGltfs = loaded.slice(3 + BIRD_IDS.length + TRIPO.length);
+// VERYLOW preset: Tripo PBR materials -> Lambert (same maps + normal map, far cheaper per pixel on phone GPUs; there is no
+// env map, so PBR only adds a small specular sheen). Done before leaf / glow / snow variants clone them.
+if (LOW) {
+  const cache = new Map();
+  const lam = (m) => {
+    if (!m.isMeshStandardMaterial) return m;
+    if (!cache.has(m)) cache.set(m, new THREE.MeshLambertMaterial({ name: m.name, color: m.color, map: m.map, normalMap: m.normalMap,
+      normalScale: m.normalScale, emissive: m.emissive, emissiveMap: m.emissiveMap, emissiveIntensity: m.emissiveIntensity,
+      transparent: m.transparent, opacity: m.opacity, alphaTest: m.alphaTest, side: m.side, vertexColors: m.vertexColors }));
+    return cache.get(m);
+  };
+  for (const g of [isleGltf, ...birdGltfs, ...tripoGltfs]) g.scene.traverse((o) => {
+    if (o.isMesh) o.material = Array.isArray(o.material) ? o.material.map(lam) : lam(o.material);
+  });
+}
 
 // ---- Schiffy ----
 const schiffy = new THREE.Group();
@@ -321,7 +383,7 @@ function cloudGeo(seed) {
   const r = rng(seed), parts = [];
   const n = 3 + Math.floor(r() * 2.2), w = n * 1.0;
   const blob = (x, y, z, rad) => {
-    const g = new THREE.SphereGeometry(rad, 20, 14);
+    const g = new THREE.SphereGeometry(rad, ...BUILT.cloudSeg); // VERYLOW: 12 x 8 = ~1/3 the tris, same silhouette at sky distance
     g.translate(x, y, z); parts.push(g);
   };
   for (let i = 0; i < n; i++) { // base row: biggest in the middle
@@ -615,20 +677,21 @@ function stepSparkles(dz, t) {
 }
 
 // ---- roadside scenery: slots recycled along both sides; a slot takes its season's model when it respawns ahead ----
-const SCENERY_SPAN = 96, SCENERY_N = 30, TUFT_N = 36;
+const SCENERY_SPAN = 96, SCENERY_N = 30, TUFT_N = BUILT.tufts; // VERYLOW: 24 (each tuft is a draw call)
 const sceneryPool = new Map(); // 'name|h' -> [groups]
 const slots = [];               // { set: 'main' | 'tuft', i, z0, g, season }
 function slotEntry(sl, season) {
   return sl.set === 'tuft' ? [season.tufts[sl.i % 3], 0.45, 'tuft'] : season.scenery[(sl.i * 7) % season.scenery.length];
 }
+function makeScenery(name, h) {
+  const g = shadows(wrap(propSrc[name].clone(true), h, false, isTripo.has(baseName(name))));
+  g.userData.key = name + '|' + h; g.userData.name = name;
+  return g;
+}
 function placeSlot(sl, season, z, rnd) {
   const [name, h, kind] = slotEntry(sl, season), key = name + '|' + h;
   if (sl.g) { scene.remove(sl.g); const l = sceneryPool.get(sl.g.userData.key) || []; l.push(sl.g); sceneryPool.set(sl.g.userData.key, l); }
-  let g = (sceneryPool.get(key) || []).pop();
-  if (!g) {
-    g = shadows(wrap(propSrc[name].clone(true), h, false, isTripo.has(baseName(name))));
-    g.userData.key = key; g.userData.name = name;
-  }
+  const g = (sceneryPool.get(key) || []).pop() || makeScenery(name, h);
   let x;
   if (kind === 'tuft') {
     x = (sl.i % 2 ? 1 : -1) * (PATH_W / 2 + 0.2 + rnd() * 2.5);
@@ -642,8 +705,9 @@ function placeSlot(sl, season, z, rnd) {
   }
   g.position.set(x, 0, z);
   g.rotation.y = kind === 'edge' ? Math.sign(x) * -Math.PI / 2 : rnd() * Math.PI * 2;
-  // shadows: only near things cast (the sun's shadow box is ~20 m wide); trees further than 7 m out skip the shadow pass
-  const cast = kind !== 'tuft' && Math.abs(x) < 7;
+  // shadows: only near things cast (the sun's shadow box is ~20 m wide); trees further than 7 m out skip the shadow pass.
+  // VERYLOW preset: scenery never casts (only Schiffy, obstacles + birds), it still receives
+  const cast = Q.sceneryCast && kind !== 'tuft' && Math.abs(x) < 7;
   g.traverse((o) => { if (o.isMesh) o.castShadow = cast; });
   scene.add(g);
   sl.g = g; sl.season = season;
@@ -682,12 +746,7 @@ const houseSnow = { value: 0 };
   };
   house.traverse((o) => { if (o.isMesh) o.material = Array.isArray(o.material) ? o.material.map(snowy) : snowy(o.material); });
 }
-// compile the leaf-shift variants now, not on their first appearance at 4000 pts (no hitch mid-run)
-{
-  const holder = new THREE.Group();
-  for (const id of Object.keys(propSrc)) if (id.includes('@')) holder.add(shadows(propSrc[id].clone(true)));
-  renderer.compile(holder, camera, scene);
-}
+// the leaf-shift variants (and everything else) are compiled + uploaded at load by warmUp(), not on first appearance
 
 // ---- obstacles: cacti (a nod to Chrome), crates, rocks, bushes, log hurdles (jump); flying birds (duck or jump) ----
 // Gameplay boxes are FIXED numbers (the old KayKit props' measured boxes, 2026-11-08): y1 = hitbox top, hz = half depth.
@@ -923,15 +982,19 @@ try { hi = +localStorage.getItem(HI_KEY) || 0; } catch {}
 
 const pad = (n) => String(Math.floor(n)).padStart(5, '0');
 function score() { return dist * SCORE_PER_M; }
+let bannerOff = false, scoreHtml = '', scoreBlink = null; // DOM only touched when it changes (no per-frame layout work)
 function drawBanner() {
-  if (bannerT <= 0) { bannerEl.style.opacity = 0; return; }
+  if (bannerT <= 0) { if (!bannerOff) { bannerEl.style.opacity = 0; bannerOff = true; } return; }
+  bannerOff = false;
   const a = BANNER_T - bannerT; // pop in 0.15 s, hold, fade the last 0.3 s
   bannerEl.style.opacity = Math.min(1, a / 0.15, bannerT / 0.3);
   bannerEl.style.transform = `translateX(-50%) scale(${1 + 0.25 * Math.max(0, 1 - a / 0.15)})`;
 }
 function drawScore() {
-  scoreEl.innerHTML = (hi ? `<span class="hi">HI ${pad(hi)}</span>` : '') + `<span class="cur">${pad(blinkT > 0 ? lastMilestone : score())}</span>`;
-  scoreEl.classList.toggle('blink', blinkT > 0 && Math.floor(blinkT * 4) % 2 === 0);
+  const html = (hi ? `<span class="hi">HI ${pad(hi)}</span>` : '') + `<span class="cur">${pad(blinkT > 0 ? lastMilestone : score())}</span>`;
+  if (html !== scoreHtml) { scoreHtml = html; scoreEl.innerHTML = html; }
+  const bl = blinkT > 0 && Math.floor(blinkT * 4) % 2 === 0;
+  if (bl !== scoreBlink) { scoreBlink = bl; scoreEl.classList.toggle('blink', bl); }
 }
 function showCard(mode, t, s, k, best = '') {
   card.querySelector('.t').textContent = t;
@@ -1126,7 +1189,7 @@ function step(dt) {
   runT += dt;
   if (firstPending) { firstPending = false; if (autoSpawn) spawnFirst(); }
   speed = speedLock || Math.min(SPEED_MAX, speed + (speed < SPEED_MID ? ACCEL : ACCEL_LATE) * dt);
-  const tierNow = SPEED_TIERS.filter((v) => speed >= v - 1e-6).length;
+  let tierNow = 0; for (const v of SPEED_TIERS) if (speed >= v - 1e-6) tierNow++; // no per-frame array
   if (tierNow > tier) { tier = tierNow; bannerT = BANNER_T; bannerEl.textContent = 'SPEED ' + tier; sfx('tier'); }
   if (bannerT > 0) bannerT -= dt;
   const dz = speed * dt;
@@ -1218,13 +1281,103 @@ function step(dt) {
   }
 }
 
+// perf overlay (2026-11-08, phone FPS check): add ?fps to the URL. Shows FPS averaged over 1 s, the slowest frame in
+// that second, triangles + draw calls of the last frame, pixel ratio and canvas size. Off by default, costs nothing then.
+const fpsEl = /[?&#]fps\b/.test(location.search + location.hash) ? document.createElement('div') : null;
+if (fpsEl) {
+  fpsEl.style.cssText = 'position:fixed;left:50%;bottom:6px;transform:translateX(-50%);z-index:99;pointer-events:none;'
+    + 'font:600 12px/1.3 monospace;color:#fff;background:#000a;padding:3px 8px;border-radius:6px;white-space:pre;text-align:center';
+  document.body.appendChild(fpsEl);
+}
+let fpsN = 0, fpsT = 0, fpsWorst = 0, fpsLast = performance.now();
+function fpsTick() {
+  const now = performance.now(), ms = now - fpsLast; fpsLast = now;
+  fpsN++; fpsT += ms; fpsWorst = Math.max(fpsWorst, ms);
+  if (fpsT < 1000) return;
+  const i = renderer.info.render, c = renderer.domElement;
+  fpsEl.textContent = `${Math.round(fpsN * 1000 / fpsT)} fps  worst ${Math.round(fpsWorst)} ms  q ${QTIER} x${SCALES[scaleI]}${ADAPT ? '' : ' fixed'}\n`
+    + `${(i.triangles / 1e6).toFixed(2)}M tris  ${i.calls} calls  dpr ${renderer.getPixelRatio()}  ${c.width}x${c.height}`;
+  fpsN = 0; fpsT = 0; fpsWorst = 0;
+}
+
+// adaptive render scale (see SCALES): 1-s fps windows. Too slow for ADAPT_DOWN_S windows -> one step down; at the cap
+// for ADAPT_UP_S windows -> one step up (never above the tier's start). If a step down did not help at all (the screen
+// is capped, e.g. a 30 Hz battery saver), it is undone and the scale stops going down.
+let adN = 0, adT = 0, adLow = 0, adHigh = 0, adLast = performance.now(), adProbe = 0, adNoDown = false;
+function setScale(i) { scaleI = i; renderer.setPixelRatio(SCALES[i]); resize(); adLow = adHigh = 0; }
+// ---- quality API (for a settings menu): setQuality('auto' | 'verylow' | 'low' | 'mid' | 'high') stores the choice and applies what
+// can change live (render scale cap, shadow map size, scenery shadows, adaptive on / off). Returns { tier, reload }:
+// reload = true when the new preset needs another model set / materials / MSAA / tuft count (call location.reload()).
+// getQuality() = { choice, tier, built, scale, adapt, reload }.
+function setQuality(choice) {
+  if (!QUALITY_CHOICES.includes(choice)) throw new Error('quality: ' + choice);
+  qChoice = choice; QTIER = tierOf(choice);
+  try { localStorage.setItem(QUALITY_KEY, choice); } catch {}
+  const P = PRESETS[QTIER];
+  Q = { ...P };
+  ADAPT = adaptOn(); adNoDown = false; adProbe = 0;
+  scaleMax = scaleCap(); setScale(scaleMax);
+  if (sun.shadow.mapSize.x !== P.shadowPx) { sun.shadow.mapSize.setScalar(P.shadowPx); sun.shadow.map?.dispose(); sun.shadow.map = null; }
+  for (const sl of slots) {
+    const cast = Q.sceneryCast && sl.set !== 'tuft' && Math.abs(sl.g.position.x) < 7;
+    sl.g.traverse((o) => { if (o.isMesh) o.castShadow = cast; });
+  }
+  return { tier: QTIER, reload: needsReload() };
+}
+function needsReload() { const P = PRESETS[QTIER]; return BUILD_KEYS.some((k) => String(P[k]) !== String(BUILT[k])); }
+function getQuality() { return { choice: qChoice, tier: QTIER, built: Object.keys(PRESETS).find((k) => PRESETS[k] === BUILT), scale: SCALES[scaleI], adapt: ADAPT, reload: needsReload() }; }
+function adaptTick() {
+  const now = performance.now(), ms = now - adLast; adLast = now;
+  if (!ADAPT || document.hidden || ms > 500 || pauseOn) { adN = adT = 0; return; } // tab switch / long stall / pause card
+  adN++; adT += ms;
+  if (adT < 1000) return;
+  const fps = adN * 1000 / adT; adN = adT = 0;
+  if (adProbe) { // first full window after a step down
+    if (fps < adProbe * 1.08) { adNoDown = true; setScale(scaleI - 1); }
+    adProbe = 0; return;
+  }
+  adLow = fps < ADAPT_LOW ? adLow + 1 : 0; adHigh = fps > ADAPT_HIGH ? adHigh + 1 : 0;
+  if (adLow >= ADAPT_DOWN_S && !adNoDown && scaleI < SCALES.length - 1) { setScale(scaleI + 1); adProbe = fps; }
+  else if (adHigh >= ADAPT_UP_S && scaleI > scaleMax) setScale(scaleI - 1);
+}
+
 function frame() {
   const dt = Math.min(clock.getDelta(), 1 / 20);
   if (!window.__runner.paused) step(dt);
   drawScore(); drawBanner(); applySky();
   renderer.render(scene, camera);
+  if (fpsEl) fpsTick();
+  adaptTick();
   requestAnimationFrame(frame);
 }
+
+// ---- warm-up at load (phone hitches, 2026-11-08): grow every pool, then compile every program (incl. shadow depth +
+// skinned birds, stars / moon / sparkles that start hidden) and upload every texture in ONE render behind the title
+// card, so no model, bird, hive, season or sky phase compiles or uploads anything mid-run.
+let warm = null;
+async function warmUp() {
+  const t0 = performance.now(), holder = new THREE.Group(), obs = [], scen = [];
+  holder.position.set(0, 0, -8);
+  for (const k of GROUND_KINDS) for (let i = 0; i < 4; i++) obs.push(take(k));
+  for (const k of HEDGE_KINDS) for (let i = 0; i < 8; i++) obs.push(take(k));
+  for (let i = 0; i < 2; i++) obs.push(buildHive());
+  for (const b of birdSrc) for (let i = 0; i < 2; i++) { const g = makeBird(b); g.userData.fly.play(); obs.push(g); }
+  // every season's slot models (meadow's are already placed), so a season change only re-uses pooled groups
+  for (const season of SEASONS.slice(1)) for (const sl of slots) { const [name, h] = slotEntry(sl, season); scen.push(makeScenery(name, h)); }
+  for (const g of [...obs, ...scen]) { g.position.set(0, 0, 0); holder.add(g); }
+  scene.add(holder);
+  const hidden = [stars, moon, sparkles].filter((o) => !o.visible);
+  for (const o of hidden) o.visible = true;
+  await renderer.compileAsync(scene, camera);
+  renderer.render(scene, camera); // textures upload + shadow-depth programs
+  for (const o of hidden) o.visible = false;
+  scene.remove(holder);
+  for (const g of obs) { g.userData.mixer?.stopAllAction(); give(g); }
+  for (const g of scen) { const l = sceneryPool.get(g.userData.key) || []; l.push(g); sceneryPool.set(g.userData.key, l); }
+  skyDirty = true;
+  warm = { ms: Math.round(performance.now() - t0), programs: renderer.info.programs.length, textures: renderer.info.memory.textures };
+}
+await warmUp();
 
 window.__runner = {
   tune: TUNE,
@@ -1260,8 +1413,13 @@ window.__runner = {
     const t0 = performance.now();
     for (let i = 0; i < n; i++) { renderer.render(scene, camera); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); }
     const ms = (performance.now() - t0) / n, r = renderer.info.render;
-    return { ms: +ms.toFixed(2), calls: r.calls, tris: r.triangles, geos: renderer.info.memory.geometries, tex: renderer.info.memory.textures };
+    return { ms: +ms.toFixed(2), calls: r.calls, tris: r.triangles, geos: renderer.info.memory.geometries, tex: renderer.info.memory.textures,
+      programs: renderer.info.programs.length, tier: QTIER, scale: SCALES[scaleI] };
   },
+  // quality tier (?q=low / ?q=high), current render scale, warm-up result + live program / texture counts (hitch probe:
+  // programs must not grow during play)
+  get quality() { return { ...getQuality(), autoLow: AUTO_LOW, warm, programs: renderer.info.programs.length, textures: renderer.info.memory.textures }; },
+  setQuality, getQuality,
 };
 
 showTitle();

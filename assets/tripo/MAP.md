@@ -54,6 +54,20 @@ Ruben's own Tripo models, prepped in Blender to replace KayKit / Tiny Treats pro
 | shroom_trio | Downloads: `Downloads/Unsorted/tripo_convert_9b7cfc15-bb2b-4e35-a10b-a96a65b3b9af.glb` (U95) | fairy mushroom cluster, edge prop (S3), glows at night | 1.0 | ~0.8 | 25,000 | 0.26 | 3 caps + leaves; edge rotation |
 | shroom_spotted | Downloads: `Downloads/Unsorted/tripo_convert_fa63915f-ca78-4fd6-ae6a-f5e3b34e1282.glb` (U153) | fairy mushroom (S3), glows at night | 1.3 (1.6 in game) | ~0.9 | 25,000 | 0.30 | pointed spotted cap; random yaw is fine |
 
+## Phone copies: `lo/` (2026-11-08, quality presets VERYLOW + LOW; were LOW + MID before the tier rework)
+
+- Same 38 ids, same heights / origins, from the same masters: `prep.py ... <out=assets/tripo/lo> "" phone`. Targets:
+  obstacles 5k (hedges 3k), hive / scenery oak 8k, house 8k, isle 7k, scenery trees / bushes / rocks / snowman 5k,
+  filler (fern, mushrooms, bench, signpost, shrooms) 3k; base colour 1024 (obstacles) / 512, normal 512, MR 1024 or flat.
+  Per-id override = `ptris` in picks.json. Total 5.4 MB (vs 16.2 MB). main.js loads exactly one set: `tripo/lo` (VERYLOW, LOW), `tripo/md` (MID) or `tripo` (HIGH).
+
+## Mid copies: `md/` (2026-11-08, quality preset MID)
+
+- Same 38 ids, same heights / origins, from the same masters: `prep.py ... <out=assets/tripo/md> "" md`. Targets ~2.5x
+  the phone copies: tier hi 12k, mid 12k, lo 8k; per-id `mtris` in picks.json, else 2.5x `ptris` (hive / scenery oak 20k,
+  house 20k, isle 17.5k, hedges 7.5k, snowman 12.5k), never above the full copy. Base colour 1024, normal 1024 everywhere,
+  MR 1024 or flat. Total 8.8 MB (lo 5.4, full 16.2).
+
 ## Gameplay sizes (obstacles keep the old prop height)
 
 - cactus_small_A 0.9 -> cactus_barrel 0.9 (wider than the potted cactus: 0.89 m; the hitbox caps hz at 0.55 anyway).
