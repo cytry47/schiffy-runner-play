@@ -12,9 +12,9 @@ import { createLive } from './audio.js';
 
 // ---- tuning (Chrome dino rules, in metres and seconds) ----
 const SPEED0 = 14, SPEED_MID = 26, SPEED_LATE = 40, SPEED_MAX = 60;  // m/s
-// m/s gained per second: 14 -> 26 in ~30 s, 26 -> 40 by ~2:27, then 40 -> 60 = the FAIR LIMIT at ~8:00 of play, held there
-// (Ruben 2026-11-12: "I can go on forever"; aim for ~8-min great runs)
-const ACCEL = 0.40, ACCEL_LATE = 0.12, ACCEL_END = 0.06;
+// m/s gained per second: 14 -> 26 in ~30 s (as before), 26 -> 40 by ~2:03, then 40 -> 60 = the FAIR LIMIT at ~5:00 of play,
+// held there ('5-minute squeeze', Ruben 2026-11-14: the 8-min ramp was "way too long" + "still way too easy"; a GREAT run ~5 min)
+const ACCEL = 0.40, ACCEL_LATE = 0.15, ACCEL_END = 0.1132;
 const GRAVITY = 40, FAST_FALL = 160; // fast fall = Down / swipe down in the air, 4x gravity (Ruben 2026-11-08: was 90)
 // jump feel (Ruben: fair, not frame-perfect): a held jump is big and forgiving; a quick tap is a small hop.
 // hedge = hedge length in seconds of running (with hitbox margins). Live-tunable via window.__runner.tune.
@@ -30,7 +30,7 @@ const HIVE_OAK_YAW = Math.PI, HIVE_X = 0.6, HIVE_BEFORE = 1.0, HIVE_AFTER = 0.8;
 // centre). Jump the prop, press Down (fast fall), land ducked under the hive; a normal fall from a mid-timed jump lands
 // too late. From score 1000, ~COMBO_P of spawns, only between plain ground spawns (no bird / hive / hedge next to it).
 // Measured slack: tools/bot.py combo checks.
-const COMBO_FROM = 1000, COMBO_T = 0.35, COMBO_P = 0.17;
+const COMBO_FROM = 1000, COMBO_T = 0.35, COMBO_P = 0.17, COMBO_P_END = 0.30; // COMBO_P ramps to COMBO_P_END by SQUEEZE_T (2026-11-14)
 const SCHIFFY_H = 1.3, DUCK_SCALE = 0.55, SWEEP_STEP = 0.2;
 // flyers (2026-11-08): owl / hummingbird / blue bird (replaced the 'crooked' yellow bird, Ruben 2026-11-08), random per spawn. Hitbox stays the crow's: 0.4 m tall from the
 // spawn height, hz 0.35. h = visual height of the scaled model, centred on the hitbox.
@@ -38,15 +38,35 @@ const FLYER_H = 0.75, FLYER_BOX = 0.4, FLYER_HZ = 0.35;
 // tone < 1 darkens the model a little so it stands out from the bright day / dusk background (tools/progression.py)
 const BIRDS = { owl: { h: 0.72, glide: true, tone: 0.4 }, hummingbird: { h: 0.8, glide: false, tone: 0.42 }, blue_bird: { h: 0.72, glide: true, tone: 1.2 } };
 const SPAWN_Z = -75, DESPAWN_Z = 8, FOG_NEAR = 35, FOG_FAR = 80;
-// fair limit (Ruben 2026-11-12): above 40 m/s the spawn line + fog move out with speed (x speed / 40; 40 = the old -75 /
-// 35..80), so every obstacle is clear in view as many seconds ahead as at 40 (ground ~1.37 s, birds ~1.2 s). Scenery past
-// the fog is hidden, so nothing pops in and the slower part of a run draws exactly what it did before.
-const farK = (v) => Math.max(1, v / SPEED_LATE);
+// warning time (Ruben 2026-11-14, was x speed / 40 = ~1.5 s at any speed): above 40 m/s the spawn line + fog move out only
+// a little (x 1.027 at 60), so an obstacle is clear in view ~1.05 s ahead at 60 m/s (ground; birds at x 1.15 = ~0.91 s, never
+// below 0.9 s; tools/ramp_measure.py). <= 40 m/s = the old -75 / 35..80. Scenery past the fog is hidden (hideZ), no pop-in.
+const farK = (v) => 1 + Math.max(0, v - SPEED_LATE) / 750;
 const spawnZ = () => SPAWN_Z * farK(speed);
 const HI_KEY = 'schiffy-runner.hi';
 // speed tiers: names for the existing ramp (no rule change). A banner shows when one is reached:
-// 1 = start 14, 2 = 20 (~15 s), 3 = 26 (SPEED_MID, ~30 s), 4 = 34 (~1:40), 5 = 44 (~3:33), 6 = 52 (~5:47), MAX SPEED = 60 (~8:00).
+// 1 = start 14, 2 = 20 (~15 s), 3 = 26 (SPEED_MID, ~30 s), 4 = 34 (~1:23), 5 = 44 (~2:39), 6 = 52 (~3:50), MAX SPEED = 60 (~5:00).
 const SPEED_TIERS = [14, 20, 26, 34, 44, 52, 60], BANNER_T = 1.2;
+// gap squeeze (Ruben 2026-11-14), by play time t (runT): the random extra on every gap shrinks from +0-50 % at the start to
+// +0-10 % at SQUEEZE_T (5:00), COMBO_P climbs to COMBO_P_END by then; after 5:00 the minimum gaps (s of running) shrink from
+// GAP_BASE to GAP_FLOOR by FLOOR_T (6:30), then hold. GAP_FLOOR = measured fair floor at 60 m/s (tools/gap_floor.py: the
+// perfect bot's second action keeps >= 0.08 s of slack for every pair pattern). Mutable for the floor tool only.
+const SQUEEZE_T = 300, FLOOR_T = 390, EXTRA0 = 0.5, EXTRA_END = 0.1;
+const GAP_BASE = { ground: 0.65, fly: 0.95, hive: HIVE_BEFORE, after: HIVE_AFTER };
+// measured 2026-11-14 at 60 m/s (0.05 s steps): ground 0.6, fly 0.75, hive 0.55; 'after' fair down to 0.25 (the search limit) but
+// the gap after a hive is max(after, the next kind's before), so it is set to the ground floor (only hive -> hive uses it)
+const GAP_FLOOR = { ground: 0.6, fly: 0.75, hive: 0.55, after: 0.6 };
+function gapRule(t) {
+  const a = Math.min(1, t / SQUEEZE_T), b = Math.min(1, Math.max(0, (t - SQUEEZE_T) / (FLOOR_T - SQUEEZE_T))), r = {};
+  for (const k in GAP_BASE) r[k] = GAP_BASE[k] + (GAP_FLOOR[k] - GAP_BASE[k]) * b;
+  r.extra = EXTRA0 + (EXTRA_END - EXTRA0) * a; r.combo = COMBO_P + (COMBO_P_END - COMBO_P) * a;
+  return r;
+}
+// min gap (m) after a spawn of kind prev (length len) before one of kind next, at speed v: s of running + len + 3 m
+function minGapFor(prev, next, len, v, r) {
+  const before = next === 'fly' ? r.fly : next === 'hive' ? r.hive : r.ground;
+  return v * Math.max(before, prev === 'hive' || prev === 'combo' ? r.after : 0) + len + 3;
+}
 // touch + pause (job D, 2026-11-07): a swipe = finger moved this far down; a swipe this soon after the same finger's
 // tap-jump cancels that jump (no accidental hop into a beehive); timed duck after a lifted swipe; resume countdown.
 const SWIPE_EARLY = 0.2, DUCK_TAP_T = 0.7, DUCK_HOLD_T = 0.25, COUNT_T = 1.5;
@@ -437,10 +457,11 @@ for (let i = 0; i < 16; i++) {
 // ground + sky more than the obstacles, so silhouettes stay as readable as by day (tools/progression.py measures it).
 // 2026-11-08 (S1): one full day + night per SEASON, the old 1600-pt proportions scaled up
 // (day 0-700, dusk -900, night -1450, dawn -1600 of 1600). The season changes as dawn ends (low light).
-// Ruben 2026-11-12 (8-min runs): the 4 seasons spread over the 8-min climb to 60 m/s, ~2:00 each: meadow 0 -> autumn 3100
-// -> winter 7600 -> fairy 12900 -> meadow 19000 (lap 2), then every SEASON_LAP pts (~2:00 at 60 m/s = 54 pts/s).
+// Ruben 2026-11-14 ('5-minute squeeze'): the 4 seasons spread over the 5-min climb to 60 m/s, ~1:15 each: meadow 0 -> autumn
+// 1730 (~1:15) -> winter 4300 (~2:30) -> fairy 7500 (~3:45) -> meadow 11250 (lap 2, ~5:00), then every SEASON_LAP pts (~1:15 at
+// 60 m/s = 54 pts/s). Times = the perfect bot's measured ramp (tools/ramp_measure.py).
 // The sky phases keep the old proportions of each season's length (day 43.75 %, dusk -56.25 %, night -90.6 %, dawn -100 %).
-const SEASON_AT = [0, 3100, 7600, 12900, 19000], SEASON_LAP = 6500, SKY_BLEND = 3;
+const SEASON_AT = [0, 1730, 4300, 7500, 11250], SEASON_LAP = 4050, SKY_BLEND = 3;
 const PHASES = [[0.4375, 'day'], [0.5625, 'dusk'], [0.90625, 'night'], [1, 'dawn']]; // [end as a share of the season, phase]
 // season number reached at a score (0 meadow, 1 autumn, 2 winter, 3 fairy, 4 = meadow lap 2, ...) and its start score
 function seasonIdx(sc) {
@@ -824,11 +845,11 @@ function spawnFirst() {
   scene.add(g);
   obstacles.push({ g, y0: 0, y1: k.y1, hz: k.hz, spin: 0 });
 }
-function spawnGround(name) { // name = optional kind, then one prop (test hook)
+function spawnGround(name, nGroup) { // name = optional kind, then one prop (test hook; nGroup = force a group size)
   const k = GROUND_KINDS.find((g) => g.name === name) || GROUND_KINDS[Math.floor(Math.random() * GROUND_KINDS.length)];
   // Chrome: bigger cactus groups once the game is faster
   const maxN = speed > 17 ? 3 : speed > 13 ? 2 : 1;
-  const n = name ? 1 : 1 + Math.floor(Math.random() * maxN);
+  const n = nGroup || (name ? 1 : 1 + Math.floor(Math.random() * maxN));
   const z0 = spawnZ();
   let z = z0;
   for (let i = 0; i < n; i++) {
@@ -1463,12 +1484,11 @@ function step(dt) {
     if ((prev === 'fly' && nextKind === 'hive') || (prev === 'hive' && nextKind === 'fly')) nextKind = 'ground';
     // combo: rolled per spawn from score 1000; it only follows a plain ground spawn (else a ground comes first) and a
     // plain ground follows it, so no bird / hive / hedge is ever next to it. Gaps = ground's 0.65 s before, hive's 0.8 s after.
-    if (sc > COMBO_FROM && Math.random() < COMBO_P) comboPend = true;
+    const rule = gapRule(runT);
+    if (sc > COMBO_FROM && Math.random() < rule.combo) comboPend = true;
     if (prev === 'combo') nextKind = 'ground';
     else if (comboPend) { nextKind = prev === 'ground' ? 'combo' : 'ground'; if (prev === 'ground') comboPend = false; }
-    const before = nextKind === 'fly' ? 0.95 : nextKind === 'hive' ? HIVE_BEFORE : 0.65;
-    const minGap = speed * Math.max(before, prev === 'hive' || prev === 'combo' ? HIVE_AFTER : 0) + len + 3;
-    nextGap = minGap * (1 + Math.random() * 0.5);
+    nextGap = minGapFor(prev, nextKind, len, speed, rule) * (1 + Math.random() * rule.extra);
   }
 
   // collision: Schiffy's box (forgiving, like Chrome's hit boxes). SWEPT (2026-11-12): at 60 m/s a frame moves 1 m
@@ -1621,6 +1641,7 @@ window.__runner = {
   get speedLock() { return speedLock; }, set speedLock(v) { speedLock = v; },
   spawnHive, spawnFlyer, spawnGround, spawnLong, spawnCombo, spawnZFor: (v) => SPAWN_Z * farK(v), get fog() { return [scene.fog.near, scene.fog.far]; },
   seasonIdx, get speedMax() { return SPEED_MAX; },
+  gapRule, minGapFor, gapFloor: GAP_FLOOR, get runT() { return runT; }, set runT(v) { runT = v; },
   step(n = 1, dt = 1 / 60) { for (let i = 0; i < n; i++) step(dt); },
   // sky isles on screen (shot crops): centre px + rough radius px
   skyScreen() {
