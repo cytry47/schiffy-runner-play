@@ -11,8 +11,10 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { createLive } from './audio.js';
 
 // ---- tuning (Chrome dino rules, in metres and seconds) ----
-const SPEED0 = 14, SPEED_MID = 26, SPEED_MAX = 40;  // m/s
-const ACCEL = 0.40, ACCEL_LATE = 0.12;              // m/s gained per second: 14 -> 26 in ~30 s, then slower climb to 40 (~2 min more)
+const SPEED0 = 14, SPEED_MID = 26, SPEED_LATE = 40, SPEED_MAX = 60;  // m/s
+// m/s gained per second: 14 -> 26 in ~30 s, 26 -> 40 by ~2:27, then 40 -> 60 = the FAIR LIMIT at ~8:00 of play, held there
+// (Ruben 2026-11-12: "I can go on forever"; aim for ~8-min great runs)
+const ACCEL = 0.40, ACCEL_LATE = 0.12, ACCEL_END = 0.06;
 const GRAVITY = 40, FAST_FALL = 160; // fast fall = Down / swipe down in the air, 4x gravity (Ruben 2026-11-08: was 90)
 // jump feel (Ruben: fair, not frame-perfect): a held jump is big and forgiving; a quick tap is a small hop.
 // hedge = hedge length in seconds of running (with hitbox margins). Live-tunable via window.__runner.tune.
@@ -29,17 +31,22 @@ const HIVE_OAK_YAW = Math.PI, HIVE_X = 0.6, HIVE_BEFORE = 1.0, HIVE_AFTER = 0.8;
 // too late. From score 1000, ~COMBO_P of spawns, only between plain ground spawns (no bird / hive / hedge next to it).
 // Measured slack: tools/bot.py combo checks.
 const COMBO_FROM = 1000, COMBO_T = 0.35, COMBO_P = 0.17;
-const SCHIFFY_H = 1.3, DUCK_SCALE = 0.55;
+const SCHIFFY_H = 1.3, DUCK_SCALE = 0.55, SWEEP_STEP = 0.2;
 // flyers (2026-11-08): owl / hummingbird / blue bird (replaced the 'crooked' yellow bird, Ruben 2026-11-08), random per spawn. Hitbox stays the crow's: 0.4 m tall from the
 // spawn height, hz 0.35. h = visual height of the scaled model, centred on the hitbox.
 const FLYER_H = 0.75, FLYER_BOX = 0.4, FLYER_HZ = 0.35;
 // tone < 1 darkens the model a little so it stands out from the bright day / dusk background (tools/progression.py)
 const BIRDS = { owl: { h: 0.72, glide: true, tone: 0.4 }, hummingbird: { h: 0.8, glide: false, tone: 0.42 }, blue_bird: { h: 0.72, glide: true, tone: 1.2 } };
-const SPAWN_Z = -75, DESPAWN_Z = 8;
+const SPAWN_Z = -75, DESPAWN_Z = 8, FOG_NEAR = 35, FOG_FAR = 80;
+// fair limit (Ruben 2026-11-12): above 40 m/s the spawn line + fog move out with speed (x speed / 40; 40 = the old -75 /
+// 35..80), so every obstacle is clear in view as many seconds ahead as at 40 (ground ~1.37 s, birds ~1.2 s). Scenery past
+// the fog is hidden, so nothing pops in and the slower part of a run draws exactly what it did before.
+const farK = (v) => Math.max(1, v / SPEED_LATE);
+const spawnZ = () => SPAWN_Z * farK(speed);
 const HI_KEY = 'schiffy-runner.hi';
 // speed tiers: names for the existing ramp (no rule change). A banner shows when one is reached:
-// 1 = start 14, 2 = 20 (~15 s), 3 = 26 (SPEED_MID, ~30 s), 4 = 34 (~1:40); cap stays 40.
-const SPEED_TIERS = [14, 20, 26, 34], BANNER_T = 1.2;
+// 1 = start 14, 2 = 20 (~15 s), 3 = 26 (SPEED_MID, ~30 s), 4 = 34 (~1:40), 5 = 44 (~3:33), 6 = 52 (~5:47), MAX SPEED = 60 (~8:00).
+const SPEED_TIERS = [14, 20, 26, 34, 44, 52, 60], BANNER_T = 1.2;
 // touch + pause (job D, 2026-11-07): a swipe = finger moved this far down; a swipe this soon after the same finger's
 // tap-jump cancels that jump (no accidental hop into a beehive); timed duck after a lifted swipe; resume countdown.
 const SWIPE_EARLY = 0.2, DUCK_TAP_T = 0.7, DUCK_HOLD_T = 0.25, COUNT_T = 1.5;
@@ -56,10 +63,10 @@ const swipePx = () => Math.max(18, Math.min(36, innerHeight * 0.06));
 // scenery shadows apply live (setQuality). Gameplay, camera framing and hitboxes are the same in every preset.
 const QUALITY_KEY = 'schiffy-runner.quality', QUALITY_CHOICES = ['auto', 'verylow', 'low', 'mid', 'high'];
 const PRESETS = {
-  high: { models: 'tripo', lambert: false, msaa: true, shadowSoft: true, tufts: 36, cloudSeg: [20, 14], maxScale: 2, shadowPx: 1024, sceneryCast: true },
-  mid: { models: 'tripo/md', lambert: false, msaa: true, shadowSoft: true, tufts: 36, cloudSeg: [20, 14], maxScale: 1.5, shadowPx: 1024, sceneryCast: true },
-  low: { models: 'tripo/lo', lambert: false, msaa: true, shadowSoft: false, tufts: 36, cloudSeg: [20, 14], maxScale: 1.5, shadowPx: 1024, sceneryCast: true },
-  verylow: { models: 'tripo/lo', lambert: true, msaa: false, shadowSoft: false, tufts: 24, cloudSeg: [12, 8], maxScale: 1, shadowPx: 512, sceneryCast: false },
+  high: { models: 'tripo', lambert: false, msaa: true, shadowSoft: true, tufts: 54, cloudSeg: [20, 14], maxScale: 2, shadowPx: 1024, sceneryCast: true },
+  mid: { models: 'tripo/md', lambert: false, msaa: true, shadowSoft: true, tufts: 54, cloudSeg: [20, 14], maxScale: 1.5, shadowPx: 1024, sceneryCast: true },
+  low: { models: 'tripo/lo', lambert: false, msaa: true, shadowSoft: false, tufts: 54, cloudSeg: [20, 14], maxScale: 1.5, shadowPx: 1024, sceneryCast: true },
+  verylow: { models: 'tripo/lo', lambert: true, msaa: false, shadowSoft: false, tufts: 36, cloudSeg: [12, 8], maxScale: 1, shadowPx: 512, sceneryCast: false },
 };
 const BUILD_KEYS = ['models', 'lambert', 'msaa', 'shadowSoft', 'tufts', 'cloudSeg'];
 const QS = new URLSearchParams(location.search);
@@ -93,7 +100,7 @@ view.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
 const HAZE = new THREE.Color('#cfe9f7');
 scene.background = skyTexture();
-scene.fog = new THREE.Fog(HAZE, 35, 80);
+scene.fog = new THREE.Fog(HAZE, FOG_NEAR, FOG_FAR);
 
 const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 400);
 // 3/4 side view (Ruben's pick 'D'): right of and a little behind Schiffy, path runs up to the right
@@ -164,17 +171,17 @@ function noiseTex(base, dots, n, w = 256, h = 256) {
 }
 const PATH_W = 3.2;
 const grassTex = noiseTex('#86c25a', ['#79b54f', '#94cf66', '#6faa48'], 500);
-grassTex.repeat.set(30, 30);
-const grass = new THREE.Mesh(new THREE.PlaneGeometry(120, 120), new THREE.MeshLambertMaterial({ map: grassTex }));
+grassTex.repeat.set(30, 42); // 168 m long (+20 .. -148): past the far fog at 60 m/s, same 4 m tile
+const grass = new THREE.Mesh(new THREE.PlaneGeometry(120, 168), new THREE.MeshLambertMaterial({ map: grassTex }));
 grass.rotation.x = -Math.PI / 2;
-grass.position.z = -40;
+grass.position.z = -64;
 grass.receiveShadow = true;
 scene.add(grass);
 const pathTex = noiseTex('#d9b98a', ['#c9a676', '#e6c99d', '#bf9c6b', '#b08d5f'], 260);
-pathTex.repeat.set(1, 30);
-const path = new THREE.Mesh(new THREE.PlaneGeometry(PATH_W, 120), new THREE.MeshLambertMaterial({ map: pathTex }));
+pathTex.repeat.set(1, 42);
+const path = new THREE.Mesh(new THREE.PlaneGeometry(PATH_W, 168), new THREE.MeshLambertMaterial({ map: pathTex }));
 path.rotation.x = -Math.PI / 2;
-path.position.set(0, 0.01, -40);
+path.position.set(0, 0.01, -64);
 path.receiveShadow = true;
 scene.add(path);
 // winter (S2): a snow texture per ground plane, mixed over the base one by uSnow (0-1, blended with the season tint).
@@ -430,9 +437,17 @@ for (let i = 0; i < 16; i++) {
 // ground + sky more than the obstacles, so silhouettes stay as readable as by day (tools/progression.py measures it).
 // 2026-11-08 (S1): one full day + night per SEASON, the old 1600-pt proportions scaled up
 // (day 0-700, dusk -900, night -1450, dawn -1600 of 1600). The season changes as dawn ends (low light).
-// Ruben 2026-11-08 (after playing, 7500 was too late): SEASON_LEN 4000 = old proportions x 2.5.
-const SEASON_LEN = 4000, SKY_BLEND = 3;
-const PHASES = [[1750, 'day'], [2250, 'dusk'], [3625, 'night'], [4000, 'dawn']]; // [score end in the season, phase]
+// Ruben 2026-11-12 (8-min runs): the 4 seasons spread over the 8-min climb to 60 m/s, ~2:00 each: meadow 0 -> autumn 3100
+// -> winter 7600 -> fairy 12900 -> meadow 19000 (lap 2), then every SEASON_LAP pts (~2:00 at 60 m/s = 54 pts/s).
+// The sky phases keep the old proportions of each season's length (day 43.75 %, dusk -56.25 %, night -90.6 %, dawn -100 %).
+const SEASON_AT = [0, 3100, 7600, 12900, 19000], SEASON_LAP = 6500, SKY_BLEND = 3;
+const PHASES = [[0.4375, 'day'], [0.5625, 'dusk'], [0.90625, 'night'], [1, 'dawn']]; // [end as a share of the season, phase]
+// season number reached at a score (0 meadow, 1 autumn, 2 winter, 3 fairy, 4 = meadow lap 2, ...) and its start score
+function seasonIdx(sc) {
+  if (sc >= SEASON_AT[4]) return 4 + Math.floor((sc - SEASON_AT[4]) / SEASON_LAP);
+  let i = 0; while (sc >= SEASON_AT[i + 1]) i++; return i;
+}
+const seasonStart = (i) => (i < 4 ? SEASON_AT[i] : SEASON_AT[4] + (i - 4) * SEASON_LAP);
 const pal = (o) => {
   const out = {};
   for (const [k, v] of Object.entries(o)) out[k] = typeof v === 'number' ? v : Array.isArray(v) ? new THREE.Vector3(...v) : new THREE.Color(v);
@@ -453,7 +468,7 @@ const PAL = {
 const clonePal = (p) => Object.fromEntries(Object.entries(p).map(([k, v]) => [k, typeof v === 'number' ? v : v.clone()]));
 const skyCur = clonePal(PAL.day);
 let skyFrom = null, skyTo = 'day', skyK = 1, skyDirty = true;
-function phaseAt(sc) { const m = sc % SEASON_LEN; return PHASES.find(([e]) => m < e)[1]; }
+function phaseAt(sc) { const i = seasonIdx(sc), a = seasonStart(i), f = (sc - a) / (seasonStart(i + 1) - a); return PHASES.find(([e]) => f < e)[1]; }
 function mixPal(out, a, b, t) {
   for (const k in b) out[k] = typeof b[k] === 'number' ? a[k] + (b[k] - a[k]) * t : out[k].copy(a[k]).lerp(b[k], t);
 }
@@ -513,7 +528,7 @@ function applySky() {
 }
 
 // ---- seasons (S1, Ruben 2026-11-08): by points, meadow 0 -> autumn 4000 -> winter 8000 -> fairy 12000 -> meadow 16000 ----
-// Each season = one full sky day + night (SEASON_LEN). A season only changes WHAT respawns ahead (far in the fog), so
+// Each season = one full sky day + night (SEASON_AT / SEASON_LAP). A season only changes WHAT respawns ahead (far in the fog), so
 // nothing already on screen pops; ground + grass tint blend over SEASON_BLEND s. Obstacles are never touched.
 // Adding a season = a data entry in SEASONS (scenery list, tuft list, ground tint) + any leaf variants in LEAF.
 // Leaf variants: 'name@variant' = the Tripo model with its GREEN texels hue-shifted (trunks, bark, flowers untouched),
@@ -606,8 +621,8 @@ const SEASONS = [
   // S3 fairy: lilac grass + pale lavender / cream path (fairy textures, snowGround), lilac tufts, a few sparkles drifting
   { id: 'fairy', scenery: SCENERY_FAIRY, tufts: TUFTS.map((n) => n + '@lilacgrass'), grass: rgb(1, 1, 1), path: rgb(1, 1, 1), snow: 0, fairy: 1 },
 ];
-const SEASON_LOOP = SEASON_LEN * SEASONS.length, SEASON_BLEND = 4;
-function seasonAt(sc) { return SEASONS[Math.floor((sc % SEASON_LOOP) / SEASON_LEN)]; }
+const SEASON_BLEND = 4;
+function seasonAt(sc) { return SEASONS[seasonIdx(sc) % SEASONS.length]; }
 for (const s of SEASONS) for (const id of [...s.scenery.map((e) => e[0]), ...s.tufts]) if (id.includes('@')) leafSource(id);
 const seasonCur = { grass: SEASONS[0].grass.clone(), path: SEASONS[0].path.clone(), snow: SEASONS[0].snow, fairy: SEASONS[0].fairy };
 let seasonNow = SEASONS[0], seasonFrom = null, seasonK = 1;
@@ -677,7 +692,10 @@ function stepSparkles(dz, t) {
 }
 
 // ---- roadside scenery: slots recycled along both sides; a slot takes its season's model when it respawns ahead ----
-const SCENERY_SPAN = 96, SCENERY_N = 30, TUFT_N = BUILT.tufts; // VERYLOW: 24 (each tuft is a draw call)
+// span 144 m (was 96 / 30 slots + 36 tufts) so pieces still respawn deep in the fog at 60 m/s; same density (45 + 54 tufts).
+// Pieces past SCENERY_HIDE * farK are hidden: at <= 40 m/s that is the old respawn line, so the early run draws as before.
+const SCENERY_SPAN = 144, SCENERY_N = 45, SCENERY_HIDE = -88, TUFT_N = BUILT.tufts; // VERYLOW: 36 (each tuft is a draw call)
+let hideZ = SCENERY_HIDE; // current hide line (step() moves it out with speed; title / reset = -88)
 const sceneryPool = new Map(); // 'name|h' -> [groups]
 const slots = [];               // { set: 'main' | 'tuft', i, z0, g, season }
 function slotEntry(sl, season) {
@@ -703,7 +721,7 @@ function placeSlot(sl, season, z, rnd) {
     g.scale.setScalar(0.85 + rnd() * 0.3);
     if (kind === 'edge') x = side * (PATH_W / 2 + 0.8);
   }
-  g.position.set(x, 0, z);
+  g.position.set(x, 0, z); g.visible = z > hideZ;
   g.rotation.y = kind === 'edge' ? Math.sign(x) * -Math.PI / 2 : rnd() * Math.PI * 2;
   // shadows: only near things cast (the sun's shadow box is ~20 m wide); trees further than 7 m out skip the shadow pass.
   // VERYLOW preset: scenery never casts (only Schiffy, obstacles + birds), it still receives
@@ -719,6 +737,8 @@ for (const sl of slots) placeSlot(sl, SEASONS[0], sl.z0, Math.random);
 function resetScenery(season, rnd) {
   for (const sl of slots) if (rnd || sl.season !== season) placeSlot(sl, season, rnd ? sl.z0 : sl.g.position.z, rnd || Math.random);
   if (rnd) house.position.z = -40;
+  for (const sl of slots) sl.g.visible = sl.g.position.z > hideZ;
+  house.visible = house.position.z > hideZ;
 }
 function mulberry(seed) {
   return () => { seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
@@ -804,14 +824,15 @@ function spawnFirst() {
   scene.add(g);
   obstacles.push({ g, y0: 0, y1: k.y1, hz: k.hz, spin: 0 });
 }
-function spawnGround() {
-  const k = GROUND_KINDS[Math.floor(Math.random() * GROUND_KINDS.length)];
+function spawnGround(name) { // name = optional kind, then one prop (test hook)
+  const k = GROUND_KINDS.find((g) => g.name === name) || GROUND_KINDS[Math.floor(Math.random() * GROUND_KINDS.length)];
   // Chrome: bigger cactus groups once the game is faster
   const maxN = speed > 17 ? 3 : speed > 13 ? 2 : 1;
-  const n = 1 + Math.floor(Math.random() * maxN);
-  let z = SPAWN_Z;
+  const n = name ? 1 : 1 + Math.floor(Math.random() * maxN);
+  const z0 = spawnZ();
+  let z = z0;
   for (let i = 0; i < n; i++) {
-    if (i > 0 && SPAWN_Z - z > speed * 0.18) break; // keep every group jumpable at the current speed
+    if (i > 0 && z0 - z > speed * 0.18) break; // keep every group jumpable at the current speed
     const g = take(k);
     g.position.set((Math.random() - 0.5) * 0.3, 0, z);
     g.rotation.y = k.yaw === 'fixed' ? 0 : k.yaw === 'z' ? (Math.random() < 0.5 ? 0 : Math.PI) + (Math.random() - 0.5) * 0.6
@@ -821,17 +842,17 @@ function spawnGround() {
     obstacles.push({ g, y0: 0, y1: k.y1, hz, spin: 0 });
     z -= hz * 2 + 0.1;
   }
-  return SPAWN_Z - z;
+  return z0 - z;
 }
 // a long low hedge: a quick tap's short hop lands in it, a held full jump clears it. Its length scales with speed:
 // it covers TUNE.hedge s of running: a held jump has ~0.27 s of timing slack, an 80 ms tap hop falls ~0.06 s short.
 const HEDGE_H = 0.55, HEDGE_STEP = 0.8, HEDGE_EDGE = 0.72; // HEDGE_EDGE = hitbox margin per end (hz * 0.8 + Schiffy)
 function spawnLong() {
   const len = Math.max(HEDGE_STEP, speed * TUNE.hedge - 2 * HEDGE_EDGE);
-  const n = Math.max(2, Math.round(len / HEDGE_STEP) + 1);
+  const n = Math.max(2, Math.round(len / HEDGE_STEP) + 1), z0 = spawnZ();
   for (let i = 0; i < n; i++) {
     const g = take(HEDGE_KINDS[i % 2]);
-    g.position.set(0, 0, SPAWN_Z - i * (len / (n - 1)));
+    g.position.set(0, 0, z0 - i * (len / (n - 1)));
     g.rotation.y = Math.random() * Math.PI * 2;
     scene.add(g);
     obstacles.push({ g, y0: 0, y1: HEDGE_H, hz: 0.55, spin: 0, long: i === 0 });
@@ -904,23 +925,23 @@ function buildHive() {
 function spawnHive() {
   const list = pool.get('hive') || [];
   const g = list.pop() || buildHive();
-  g.position.set(0, 0, SPAWN_Z);
+  g.position.set(0, 0, spawnZ());
   scene.add(g);
   obstacles.push({ g, y0: HIVE_Y0, y1: HIVE_Y1, hz: 0.45, spin: 0, hive: true });
   return 1.2;
 }
-// combo: one ground prop at SPAWN_Z, the hive COMBO_T s of running behind it. name = optional ground kind (test hook)
+// combo: one ground prop at the spawn line, the hive COMBO_T s of running behind it. name = optional ground kind (test hook)
 function spawnCombo(name) {
   const k = GROUND_KINDS.find((g) => g.name === name) || GROUND_KINDS[Math.floor(Math.random() * GROUND_KINDS.length)];
   const g = take(k);
-  g.position.set((Math.random() - 0.5) * 0.3, 0, SPAWN_Z);
+  g.position.set((Math.random() - 0.5) * 0.3, 0, spawnZ());
   g.rotation.y = k.yaw === 'fixed' ? 0 : k.yaw === 'z' ? (Math.random() < 0.5 ? 0 : Math.PI) : Math.random() * Math.PI * 2;
   scene.add(g);
   obstacles.push({ g, y0: 0, y1: k.y1, hz: k.hz, spin: 0, combo: true });
   const d = speed * COMBO_T;
   spawnHive();
   const h = obstacles[obstacles.length - 1];
-  h.g.position.z = SPAWN_Z - d; h.combo = true;
+  h.g.position.z = g.position.z - d; h.combo = true;
   return d + 1.2;
 }
 function spawnFlyer(bird) { // bird = optional id (test hook: force one species)
@@ -930,7 +951,7 @@ function spawnFlyer(bird) { // bird = optional id (test hook: force one species)
   const src = birdSrc.find((b) => b.id === bird) || birdSrc[Math.floor(Math.random() * birdSrc.length)];
   const list = pool.get('bird:' + src.id) || [];
   const g = list.pop() || makeBird(src);
-  g.position.set(0, yBase, SPAWN_Z);
+  g.position.set(0, yBase, spawnZ());
   g.rotation.set(0, 0, 0); // glTF +Z = toward the runner
   // the high, harmless ones may glide; everything you must dodge flaps. Random phase so a flock never syncs.
   const u = g.userData, act = hi === 2 && u.glide && Math.random() < 0.5 ? u.glide : u.fly;
@@ -1045,7 +1066,7 @@ function reset() {
   speed = SPEED0; dist = 0; nextGap = FIRST_GAP; firstPending = true; nextKind = 'ground'; comboPend = false; vy = 0; y = 0; ducking = false; blinkT = 0; lastMilestone = 0; runT = 0;
   keyDuck = hookDuck = false; duckTimer = 0; for (const f of fingers.values()) { f.duck = false; f.jumped = false; } jumpFinger = null;
   pauseOn = false; countT = 0; countEl.classList.remove('on');
-  tier = 1; bannerT = 0; snapSky('day'); snapSeasonTint(SEASONS[0]); resetScenery(SEASONS[0]);
+  tier = 1; bannerT = 0; scene.fog.near = FOG_NEAR; scene.fog.far = FOG_FAR; hideZ = SCENERY_HIDE; snapSky('day'); snapSeasonTint(SEASONS[0]); resetScenery(SEASONS[0]);
   schiffy.position.y = 0;
 }
 function start() {
@@ -1226,7 +1247,7 @@ function loadRuns() { try { const r = JSON.parse(lsGet(SET.runs) || '[]'); retur
 // returns the run's place on the leaderboard (1-10) or 0; lastRun = its date (the leaderboard highlights that row)
 let lastRun = null;
 function recordRun(sc) {
-  const seasonI = Math.floor(sc / SEASON_LEN), timeS = +runT.toFixed(1);
+  const seasonI = seasonIdx(sc), timeS = +runT.toFixed(1);
   const st = loadStats();
   st.runs++; st.longestS = Math.max(st.longestS, timeS); st.seasonMax = Math.max(st.seasonMax, seasonI);
   lsSet(SET.stats, JSON.stringify(st));
@@ -1360,9 +1381,11 @@ function step(dt) {
 
   runT += dt;
   if (firstPending) { firstPending = false; if (autoSpawn) spawnFirst(); }
-  speed = speedLock || Math.min(SPEED_MAX, speed + (speed < SPEED_MID ? ACCEL : ACCEL_LATE) * dt);
+  speed = speedLock || Math.min(SPEED_MAX, speed + (speed < SPEED_MID ? ACCEL : speed < SPEED_LATE ? ACCEL_LATE : ACCEL_END) * dt);
+  const fk = farK(speed); scene.fog.near = FOG_NEAR * fk; scene.fog.far = FOG_FAR * fk; // spawn + fog move out above 40 m/s
+  hideZ = SCENERY_HIDE * fk - 8 * (fk - 1); // scenery further out is (nearly) fully fogged: hidden. <= 40 m/s: -88 = the old respawn line
   let tierNow = 0; for (const v of SPEED_TIERS) if (speed >= v - 1e-6) tierNow++; // no per-frame array
-  if (tierNow > tier) { tier = tierNow; bannerT = BANNER_T; bannerEl.textContent = 'SPEED ' + tier; sfx('tier'); }
+  if (tierNow > tier) { tier = tierNow; bannerT = BANNER_T; bannerEl.textContent = tier === SPEED_TIERS.length ? 'MAX SPEED' : 'SPEED ' + tier; sfx('tier'); }
   if (bannerT > 0) bannerT -= dt;
   const dz = speed * dt;
   dist += dz;
@@ -1375,6 +1398,7 @@ function step(dt) {
   if (blinkT > 0) blinkT -= dt;
 
   // Schiffy vertical motion
+  const yPrev = y; // swept collision: Schiffy's height at the start of this frame
   if (duckTimer > 0) duckTimer = Math.max(0, duckTimer - dt);
   updDuck();
   if (y > 0 || vy > 0) {
@@ -1405,11 +1429,14 @@ function step(dt) {
     // respawn ahead (in the fog): a new season swaps the model here, never on screen
     if (sl.season !== seasonNow) placeSlot(sl, seasonNow, g.position.z - SCENERY_SPAN, Math.random); else g.position.z -= SCENERY_SPAN;
   }
-  if ((house.position.z += dz) > DESPAWN_Z) house.position.z -= SCENERY_SPAN;
+  for (const sl of slots) sl.g.visible = sl.g.position.z > hideZ;
+  if ((house.position.z += dz) > DESPAWN_Z) house.position.z -= Math.max(96, DESPAWN_Z - hideZ); // 96 m = as before up to 40 m/s
+  house.visible = house.position.z > hideZ;
   stepSparkles(dz, runT);
 
   for (let i = obstacles.length - 1; i >= 0; i--) {
     const o = obstacles[i];
+    o.pz = o.g.position.z; // swept collision: where it was at the start of this frame
     o.g.position.z += dz;
     if (o.flyer) {
       o.g.position.z += speed * 0.15 * dt; // flyers come at you a bit faster, like Chrome's pterodactyls
@@ -1444,12 +1471,21 @@ function step(dt) {
     nextGap = minGap * (1 + Math.random() * 0.5);
   }
 
-  // collision: Schiffy's box (forgiving, like Chrome's hit boxes)
+  // collision: Schiffy's box (forgiving, like Chrome's hit boxes). SWEPT (2026-11-12): at 60 m/s a frame moves 1 m
+  // (1.5 m at 40 fps), so the frame's move is checked in sub-steps of <= SWEEP_STEP m (obstacle z + Schiffy's y both
+  // interpolated): no obstacle can be skipped between two frames (tools/bot.py tunnel check).
   const sh = SCHIFFY_H * schiffyBody.scale.y * 0.88, sz = 0.28;
+  let hit = false;
   for (const o of obstacles) {
-    const oz = o.g.position.z, oy0 = o.flyer ? o.g.position.y : o.y0,
-      oy1 = o.flyer ? oy0 + (o.y1 - o.y0) : o.hive ? o.y1 : o.y1 * 0.85;
-    if (Math.abs(oz) < o.hz * 0.8 + sz && y < oy1 && y + sh > oy0 + 0.05) { gameOver(); break; }
+    const z1 = o.g.position.z, z0 = o.pz ?? z1, band = o.hz * 0.8 + sz;
+    if (Math.max(z0, z1) <= -band || Math.min(z0, z1) >= band) continue; // never inside the band this frame
+    const oy0 = o.flyer ? o.g.position.y : o.y0, oy1 = o.flyer ? oy0 + (o.y1 - o.y0) : o.hive ? o.y1 : o.y1 * 0.85;
+    const n = Math.max(1, Math.ceil(Math.abs(z1 - z0) / SWEEP_STEP));
+    for (let k = 1; k <= n && !hit; k++) {
+      const t = k / n, z = z0 + (z1 - z0) * t, yy = yPrev + (y - yPrev) * t;
+      hit = Math.abs(z) < band && yy < oy1 && yy + sh > oy0 + 0.05;
+    }
+    if (hit) { gameOver(); break; }
   }
 }
 
@@ -1583,7 +1619,8 @@ window.__runner = {
   },
   get autoSpawn() { return autoSpawn; }, set autoSpawn(v) { autoSpawn = v; },
   get speedLock() { return speedLock; }, set speedLock(v) { speedLock = v; },
-  spawnHive, spawnFlyer, spawnGround, spawnLong, spawnCombo,
+  spawnHive, spawnFlyer, spawnGround, spawnLong, spawnCombo, spawnZFor: (v) => SPAWN_Z * farK(v), get fog() { return [scene.fog.near, scene.fog.far]; },
+  seasonIdx, get speedMax() { return SPEED_MAX; },
   step(n = 1, dt = 1 / 60) { for (let i = 0; i < n; i++) step(dt); },
   // sky isles on screen (shot crops): centre px + rough radius px
   skyScreen() {
